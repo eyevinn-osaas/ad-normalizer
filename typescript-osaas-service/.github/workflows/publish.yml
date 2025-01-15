@@ -1,0 +1,121 @@
+name: Deploy to OSaaS staging cluster
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  push_to_registry:
+    name: Push Docker Image to GitHub Container Registry
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          secrets: |
+            "npmrc=${{ secrets.NPM_RC }}"
+
+      - name: Release on Github
+        id: release
+        uses: softprops/action-gh-release@v1
+        with:
+          generate_release_notes: true
+
+      - name: Post release to slack
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          channel-id: 'C069XKCNEE6'
+          slack-message: "${{ env.IMAGE_NAME }}:${{ github.ref_name }} released\n${{ steps.release.outputs.url }}"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.OSAAS_OPS_SLACK_BOT_TOKEN }}
+
+  deploy:
+    name: Deploy to OSaaS stage cluster
+    needs: ['push_to_registry']
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post deploying to slack
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          channel-id: 'C069XKCNEE6'
+          slack-message: "${{ env.IMAGE_NAME }}:${{ inputs.version }} deploying to stage :spin:"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.OSAAS_OPS_SLACK_BOT_TOKEN }}
+    
+      - name: Set the Kubernetes context
+        uses: azure/k8s-set-context@v2
+        with:
+          method: service-account
+          k8s-url: https://4380526a-781e-4fef-acff-008160662dc9.se-sto-2.linodelke.net:443
+          k8s-secret: ${{ secrets.OSAAS_STAGE_KUBERNETES }}
+
+      - name: Checkout source code
+        uses: actions/checkout@v3
+
+      - id: image
+        uses: ASzc/change-string-case-action@v5
+        with:
+          string: ${{ env.IMAGE_NAME }}
+
+      - name: Deploy to the Kubernetes cluster
+        uses: azure/k8s-deploy@v1
+        with:
+          namespace: osaas
+          manifests: |
+            kubernetes/deployment.yml
+          images: |
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.lowercase }}:${{ github.ref_name }}
+
+      - name: Post success to slack
+        if: ${{ success() }}
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          channel-id: 'C069XKCNEE6'
+          slack-message: "${{ env.IMAGE_NAME }}:${{ inputs.version }} deployed to stage 🚀"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.OSAAS_OPS_SLACK_BOT_TOKEN }}
+
+      - name: Post failure to slack
+        if: ${{ failure() }}
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          channel-id: 'C069XKCNEE6'
+          slack-message: "${{ env.IMAGE_NAME }}:${{ inputs.version }} deploy FAILED 📉"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.OSAAS_OPS_SLACK_BOT_TOKEN }}

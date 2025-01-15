@@ -1,0 +1,68 @@
+name: Trigger deploy to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'The version to deploy'
+        required: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post deploying to slack
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          channel-id: 'C069XKCNEE6'
+          slack-message: "${{ env.IMAGE_NAME }}:${{ inputs.version }} deploying to production :spin:"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.OSAAS_OPS_SLACK_BOT_TOKEN }}
+
+      - name: Set the Kubernetes context
+        uses: azure/k8s-set-context@v2
+        with:
+          method: service-account
+          k8s-url: https://186793f9-6f94-4049-b11f-7a0f199b16bb.se-sto-2.linodelke.net:443
+          k8s-secret: ${{ secrets.OSAAS_PROD_KUBERNETES }}
+
+      - name: Checkout source code
+        uses: actions/checkout@v3
+
+      - id: image
+        uses: ASzc/change-string-case-action@v5
+        with:
+          string: ${{ env.IMAGE_NAME }}
+
+      - name: Update deployment in Kubernetes cluster
+        uses: azure/k8s-deploy@v1
+        with:
+          namespace: osaas
+          manifests: |
+            kubernetes/deployment.yml
+          images: |
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.lowercase }}:${{ inputs.version }}
+
+      - name: Post success to slack
+        if: ${{ success() }}
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          channel-id: 'C069XKCNEE6'
+          slack-message: "${{ env.IMAGE_NAME }}:${{ inputs.version }} deployed to production 🚀"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.OSAAS_OPS_SLACK_BOT_TOKEN }}
+
+      - name: Post failure to slack
+        if: ${{ failure() }}
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          channel-id: 'C069XKCNEE6'
+          slack-message: "${{ env.IMAGE_NAME }}:${{ inputs.version }} deploy to production FAILED 📉"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.OSAAS_OPS_SLACK_BOT_TOKEN }}
+
