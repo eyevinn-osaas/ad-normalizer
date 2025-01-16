@@ -30,7 +30,9 @@
     "fastify": "4.23.2",
     "minio": "^8.0.3",
     "nodemon": "^2.0.20",
-    "ts-node": "^10.9.1"
+    "redis": "^4.7.0",
+    "ts-node": "^10.9.1",
+    "winston": "^3.17.0"
   },
   "devDependencies": {
     "@commitlint/cli": "^17.4.2",

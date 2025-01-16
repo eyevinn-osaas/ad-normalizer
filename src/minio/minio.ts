@@ -1,24 +1,28 @@
 import * as Minio from 'minio'
-import { AdNormalizerConfiguration } from '../config/config';
-import { ResultCallback } from 'minio/dist/main/internal/type';
-let minioClient: Minio.Client | null = null;
+import logger from '../util/logger';
 
-export const getMinioClient = (config: AdNormalizerConfiguration): Minio.Client => {
-    if (minioClient === null) {
-        minioClient = new Minio.Client({
-            endPoint: config.minioUrl,
-            accessKey: config.minioAccessKey,
-            secretKey: config.minioSecretKey,
+export class MinioClient {
+    private minioclient: Minio.Client | undefined;
+    constructor(private url: string, private accessKey: string, private secretKey: string) { }
+
+    setupClient() {
+        logger.info("Setting up Minio Client", { url: this.url });
+        if (this.minioclient) {
+            logger.error('Minio client already connected');
+            return;
+        }
+        this.minioclient = new Minio.Client({
+            endPoint: this.url,
+            accessKey: this.accessKey,
+            secretKey: this.secretKey,
             useSSL: true
         });
     }
-    return minioClient;
-}
-
-export const listenForNotifications = (minioClient: Minio.Client, bucketName: string, assetId: string, onNotification: (r: any) => void) => {
-    const poller = minioClient!.listenBucketNotification(bucketName, assetId, '', ['s3:ObjectCreated:*']);
-    poller.on('notification', (record) => {
-        onNotification(record)
-        poller.stop();
-    });
+    listenForNotifications = (minioClient: Minio.Client, bucketName: string, assetId: string, masterPlaylistName: string, onNotification: (r: any) => void) => {
+        const poller = minioClient!.listenBucketNotification(bucketName, assetId, masterPlaylistName, ['s3:ObjectCreated:*']);
+        poller.on('notification', (record) => {
+            onNotification(record)
+            poller.stop();
+        });
+    }
 }

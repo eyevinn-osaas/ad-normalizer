@@ -1,7 +1,9 @@
 import api from './api';
 import 'dotenv/config';
 import getConfiguration from './config/config';
-const config = getConfiguration();
+import logger from './util/logger';
+
+
 const server = api({ title: '@eyevinn/typescript-nodejs' });
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8000;

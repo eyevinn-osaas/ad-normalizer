@@ -15,7 +15,7 @@ export type InputFile = {
     type: InputType
 }
 
-enum InputType {
+export enum InputType {
     AUDIO ="Audio",
     VIDEO="Video",
     AUDIO_VIDEO="AudioVideo"
