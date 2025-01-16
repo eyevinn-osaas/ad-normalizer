@@ -18,9 +18,9 @@ export class MinioClient {
             useSSL: true
         });
     }
-    listenForNotifications = (minioClient: Minio.Client, bucketName: string, assetId: string, masterPlaylistName: string, onNotification: (r: any) => void) => {
-        const poller = minioClient!.listenBucketNotification(bucketName, assetId, masterPlaylistName, ['s3:ObjectCreated:*']);
-        poller.on('notification', (record) => {
+    listenForNotifications = (bucketName: string, assetId: string, masterPlaylistName: string, onNotification: (r: any) => void) => {
+        const poller = this.minioclient?.listenBucketNotification(bucketName, assetId, masterPlaylistName, ['s3:ObjectCreated:*']);
+        poller?.on('notification', (record) => {
             onNotification(record)
             poller.stop();
         });

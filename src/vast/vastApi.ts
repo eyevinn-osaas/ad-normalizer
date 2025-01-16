@@ -20,6 +20,7 @@ export interface AdApiOptions {
     adServerUrl: string;
     lookUpAsset: (mediaFile: string) => Promise<string | null | undefined>;
     onMissingAsset?: (asset: ManifestAsset) => Promise<Response>;
+    setupNotification?: (asset: ManifestAsset) => void
 }
 
 export const vastApi: FastifyPluginCallback<AdApiOptions> = (fastify, opts, next) => {

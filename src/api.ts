@@ -50,6 +50,8 @@ export default (opts: ApiOptions) => {
 
   redisclient.connect();
 
+  const saveToRedis = (key: string, value: string) => { redisclient.set(key, value) };
+
   const encoreClient = new EncoreClient(config.encoreUrl, config.callbackListenerUrl);
 
   const minioClient = new MinioClient(config.minioUrl, config.minioAccessKey, config.minioSecretKey);
@@ -82,7 +84,8 @@ export default (opts: ApiOptions) => {
   api.register(vastApi, {
     adServerUrl: config.adServerUrl,
     lookUpAsset: (mediaFile: string) => redisclient.get(mediaFile),
-    onMissingAsset: async (asset: ManifestAsset) => encoreClient.createEncoreJob(asset)
+    onMissingAsset: async (asset: ManifestAsset) => encoreClient.createEncoreJob(asset),
+    setupNotification: (asset: ManifestAsset) => minioClient.listenForNotifications("bucket", asset.creativeId, "index.m3u8", () => saveToRedis(asset.creativeId, asset.masterPlaylistUrl))
   });
   return api;
 }
