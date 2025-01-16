@@ -41,8 +41,20 @@ export const vastApi: FastifyPluginCallback<AdApiOptions> = (fastify, opts, next
         missing.forEach(async (creative) => {
             if (opts.onMissingAsset) {
                 opts?.onMissingAsset(creative).then((response) => {
-                    logger.info(`${creative.creativeId} sent for transcoding`, { response });
-                }).catch((error) => { logger.error("Failed to handle missing asset", { error }) });
+                    if (!response.ok) {
+                        let code = response.status
+                        let url = response.url
+                        let reason = response.statusText
+                        logger.error("Failed to submit encore job", { code, reason, url });
+                        throw new Error("Failed to submit encore job");
+                    }
+                    response.json()
+                }).then(data => {
+                    //@ts-ignore TODO: remove this check
+                    const encoreJobId = data.id;
+                    logger.info("Submitted encore job", { encoreJobId });
+                })
+                    .catch((error) => { logger.error("Failed to handle missing asset", { error }) });
             }
         })
         reply.send({ assets: found } as ManifestResponse);

@@ -3,7 +3,7 @@ export type EncoreJob = {
     externalId: string;
     profile: string;
     outputFolder: string;
-    basename: string;
+    baseName: string;
     progressCallbackUri: string;
     inputs: InputFile[];
 }

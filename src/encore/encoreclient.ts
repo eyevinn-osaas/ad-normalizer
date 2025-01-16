@@ -7,9 +7,12 @@ export class EncoreClient {
 
     async submitJob(job: EncoreJob): Promise<Response> {
         logger.info('Submitting job to Encore', { job });
-        // Submit the job to the Encore service
         return fetch(`${this.url}/encoreJobs`, {
             method: 'POST',
+            headers: {
+                "Content-Type": "application/json",
+                "Accept": "application/hal+json"
+            },
             body: JSON.stringify(job),
         })
     }
@@ -19,7 +22,7 @@ export class EncoreClient {
             externalId: creative.creativeId,
             profile: 'program',
             outputFolder: creative.creativeId,
-            basename: creative.creativeId,
+            baseName: creative.creativeId,
             progressCallbackUri: this.callbackUrl,
             inputs: [{
                 uri: creative.masterPlaylistUrl,

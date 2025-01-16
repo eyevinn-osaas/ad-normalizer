@@ -5,6 +5,7 @@ export interface AdNormalizerConfiguration {
     minioUrl: string;
     minioAccessKey: string;
     minioSecretKey: string;
+    minioBucket: string;
     adServerUrl: string;
     redisUrl: string;
 }
@@ -19,6 +20,7 @@ let loadConfiguration = (): AdNormalizerConfiguration => {
     const minioSecretKey = process.env.MINIO_SECRET_KEY;
     const adServerUrl = process.env.AD_SERVER_URL;
     const redisUrl = process.env.REDIS_URL;
+    const minioBucket = process.env.MINIO_BUCKET;
     const configuration = {
         encoreUrl: encoreUrl,
         callbackListenerUrl: callbackListenerUrl,
@@ -26,7 +28,8 @@ let loadConfiguration = (): AdNormalizerConfiguration => {
         minioAccessKey: minioAccessKey,
         minioSecretKey: minioSecretKey,
         adServerUrl: adServerUrl,
-        redisUrl: redisUrl
+        redisUrl: redisUrl,
+        minioBucket: minioBucket
     } as AdNormalizerConfiguration;
 
     return configuration;
