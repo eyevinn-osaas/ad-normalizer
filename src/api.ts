@@ -12,7 +12,6 @@ import logger from './util/logger';
 import { EncoreClient } from './encore/encoreclient';
 import { MinioClient } from './minio/minio';
 
-
 const HelloWorld = Type.String({
   description: 'The magical words!'
 });
@@ -21,7 +20,11 @@ export interface HealthcheckOptions {
   title: string;
 }
 
-const healthcheck: FastifyPluginCallback<HealthcheckOptions> = (fastify, opts, next) => {
+const healthcheck: FastifyPluginCallback<HealthcheckOptions> = (
+  fastify,
+  opts,
+  next
+) => {
   fastify.get<{ Reply: Static<typeof HelloWorld> }>(
     '/',
     {
@@ -44,17 +47,38 @@ export interface ApiOptions {
 }
 
 export default (opts: ApiOptions) => {
-  logger.info("starting server")
+  logger.info('starting server');
   const config = getConfiguration();
+
+  if (!config.serviceAccessToken) {
+    logger.info(
+      "No service access token provided. If you're running the app outside of OSC, you won't be able to access the API."
+    );
+  } else {
+    logger.info(
+      'Service access token provided. You should be able to access the API.'
+    );
+  }
+
   const redisclient = new RedisClient(config.redisUrl);
 
   redisclient.connect();
 
-  const saveToRedis = (key: string, value: string) => { redisclient.set(key, value) };
+  const saveToRedis = (key: string, value: string) => {
+    redisclient.set(key, value);
+  };
+  logger.info(config.callbackListenerUrl);
+  const encoreClient = new EncoreClient(
+    config.encoreUrl,
+    config.callbackListenerUrl,
+    config.serviceAccessToken
+  );
 
-  const encoreClient = new EncoreClient(config.encoreUrl, config.callbackListenerUrl);
-
-  const minioClient = new MinioClient(config.minioUrl, config.minioAccessKey, config.minioSecretKey);
+  const minioClient = new MinioClient(
+    config.minioUrl,
+    config.minioAccessKey,
+    config.minioSecretKey
+  );
 
   const api = fastify({
     ignoreTrailingSlash: true
@@ -77,15 +101,21 @@ export default (opts: ApiOptions) => {
     routePrefix: '/docs'
   });
 
-
   api.register(healthcheck, { title: opts.title });
   // register other API routes here
 
   api.register(vastApi, {
     adServerUrl: config.adServerUrl,
     lookUpAsset: (mediaFile: string) => redisclient.get(mediaFile),
-    onMissingAsset: async (asset: ManifestAsset) => encoreClient.createEncoreJob(asset),
-    setupNotification: (asset: ManifestAsset) => minioClient.listenForNotifications("bucket", asset.creativeId, "index.m3u8", () => saveToRedis(asset.creativeId, asset.masterPlaylistUrl))
+    onMissingAsset: async (asset: ManifestAsset) =>
+      encoreClient.createEncoreJob(asset),
+    setupNotification: (asset: ManifestAsset) =>
+      minioClient.listenForNotifications(
+        config.minioBucket,
+        asset.creativeId,
+        'index.m3u8',
+        () => saveToRedis(asset.creativeId, asset.masterPlaylistUrl)
+      )
   });
   return api;
-}
+};
