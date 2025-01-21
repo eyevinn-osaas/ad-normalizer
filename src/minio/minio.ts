@@ -21,7 +21,7 @@ export class MinioClient {
   ) {}
 
   setupClient() {
-    logger.info('Setting up Minio Client', { url: this.url });
+    logger.debug('Setting up Minio Client', { url: this.url });
     if (this.minioclient) {
       logger.error('Minio client already connected');
       return;
@@ -39,7 +39,7 @@ export class MinioClient {
     masterPlaylistName: string,
     onNotification: (r: any) => Promise<void>
   ) => {
-    logger.info('Listening for notifications', {
+    logger.debug('Listening for notifications', {
       bucketName,
       assetId,
       masterPlaylistName
@@ -58,10 +58,10 @@ export class MinioClient {
     if (poller == undefined) {
       logger.error('Failed to create poller');
     } else {
-      logger.info('Poller created');
+      logger.debug('Poller created');
     }
     poller?.on('notification', (record) => {
-      logger.info('Received notification', record);
+      logger.debug('Received notification', record);
       onNotification(record as MinioNotification);
       poller.stop();
     });

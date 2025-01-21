@@ -21,7 +21,6 @@ export class EncoreClient {
         ...headers,
         'x-jwt': `Bearer ${this.serviceAccessToken}`
       };
-      const sat = this.serviceAccessToken;
     }
     return fetch(`${this.url}/encoreJobs`, {
       method: 'POST',

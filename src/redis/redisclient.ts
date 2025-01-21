@@ -12,7 +12,7 @@ export class RedisClient {
       return;
     }
     this.client = await createClient({ url: this.url })
-      .on('error', (err) => logger.error('Redis error',  err ))
+      .on('error', (err) => logger.error('Redis error', err))
       .connect();
   }
 

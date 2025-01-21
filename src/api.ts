@@ -68,7 +68,7 @@ export default (opts: ApiOptions) => {
     logger.info('Saving to Redis', { key, value });
     redisclient.set(key, value);
   };
-  logger.info(config.callbackListenerUrl);
+  logger.debug('callback listener URL:', config.callbackListenerUrl);
   const encoreClient = new EncoreClient(
     config.encoreUrl,
     config.callbackListenerUrl,
@@ -110,11 +110,11 @@ export default (opts: ApiOptions) => {
   api.register(vastApi, {
     adServerUrl: config.adServerUrl,
     assetServerUrl: `https://${config.minioUrl}/${config.minioBucket}/`,
-    lookUpAsset: async (mediaFile: string) =>  redisclient.get(mediaFile),
+    lookUpAsset: async (mediaFile: string) => redisclient.get(mediaFile),
     onMissingAsset: async (asset: ManifestAsset) =>
       encoreClient.createEncoreJob(asset),
     setupNotification: (asset: ManifestAsset) => {
-      logger.info('Setting up notification for asset', { asset });
+      logger.debug('Setting up notification for asset', { asset });
       minioClient.listenForNotifications(
         config.minioBucket,
         asset.creativeId + '/', // TODO: Pass encore job id and add as part of the prefix

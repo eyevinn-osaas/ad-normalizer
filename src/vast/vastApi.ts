@@ -46,9 +46,9 @@ export const vastApi: FastifyPluginCallback<AdApiOptions> = (
         creatives,
         opts.lookUpAsset
       );
-      logger.info('Partitioned creatives', { found, missing });
-      logger.info('Received creatives', { creatives });
-      logger.info('Received VAST request');
+      logger.debug('Partitioned creatives', { found, missing });
+      logger.debug('Received creatives', { creatives });
+      logger.debug('Received VAST request');
       missing.forEach(async (creative) => {
         if (opts.onMissingAsset) {
           opts
@@ -65,16 +65,15 @@ export const vastApi: FastifyPluginCallback<AdApiOptions> = (
                 });
                 throw new Error('Failed to submit encore job');
               }
-              logger.info('Submitted encore job', { creative });
               return response.json();
             })
             .then((data) => {
               const encoreJobId = data.id;
-              logger.info('Submitted encore job', { encoreJobId });
+              logger.info('Submitted encore job', { encoreJobId, creative });
               if (opts.setupNotification) {
-                logger.info('Setting up notification');
+                logger.debug('Setting up notification');
                 opts.setupNotification(creative);
-                logger.info("Notification set up. You're good to go!");
+                logger.debug("Notification set up. You're good to go!");
               }
             })
             .catch((error) => {
@@ -101,7 +100,7 @@ const partitionCreatives = async (
   const [found, missing]: [ManifestAsset[], ManifestAsset[]] = [[], []];
   for (const creative of creatives) {
     const asset = await lookUpAsset(creative.creativeId);
-    logger.info('Looking up asset', { creative, asset });
+    logger.debug('Looking up asset', { creative, asset });
     if (asset) {
       found.push({ creativeId: creative.creativeId, masterPlaylistUrl: asset });
     } else {
@@ -130,13 +129,13 @@ const getCreatives = async (
         throw new Error('Response from ad server was not OK');
       }
       const contentType = response.headers.get('content-type');
-      logger.info('Received response from ad server', { contentType });
+      logger.debug('Received response from ad server', { contentType });
       return response.text();
     })
     .then((body) => {
       const parser = new XMLParser();
       const parsedVAST = parser.parse(body);
-      const creatives = parsedVAST.VAST.Ad.reduce((acc: any[], ad: any) => {
+      const creatives = parsedVAST.VAST.Ad.reduce((acc: ManifestAsset[], ad: any) => {
         const adId = ad.InLine.Creatives.Creative.UniversalAdId.replace(
           /[^a-zA-Z0-9]/g,
           ''
