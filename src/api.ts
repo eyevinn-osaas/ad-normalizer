@@ -50,7 +50,7 @@ export default (opts: ApiOptions) => {
   logger.info('starting server');
   const config = getConfiguration();
 
-  if (!config.serviceAccessToken) {
+  if (!config.oscToken) {
     logger.info(
       "No service access token provided. If you're running the app outside of OSC, you won't be able to access the API."
     );
@@ -72,7 +72,7 @@ export default (opts: ApiOptions) => {
   const encoreClient = new EncoreClient(
     config.encoreUrl,
     config.callbackListenerUrl,
-    config.serviceAccessToken
+    config.oscToken
   );
 
   const minioClient = new MinioClient(

@@ -43,7 +43,7 @@ describe('EncoreClient', () => {
       ]
     };
 
-    await encoreClient.submitJob(job);
+    await encoreClient.submitJob(job, serviceAccessToken);
 
     expect(global.fetch).toHaveBeenCalledWith(`${url}/encoreJobs`, {
       method: 'POST',

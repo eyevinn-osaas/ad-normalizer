@@ -1,35 +1,43 @@
 import logger from '../util/logger';
 import { ManifestAsset } from '../vast/vastApi';
 import { EncoreJob, InputType } from './types';
+import { Context } from '@osaas/client-core';
 
 export class EncoreClient {
   constructor(
     private url: string,
     private callbackUrl: string,
-    private serviceAccessToken?: string
+    private oscToken?: string
   ) {}
 
-  async submitJob(job: EncoreJob): Promise<Response> {
+  async submitJob(
+    job: EncoreJob,
+    serviceAccessToken?: string
+  ): Promise<Response> {
     logger.info('Submitting job to Encore', { job });
     let headersWithToken = undefined;
-    const headers = {
+    const contentHeaders = {
       'Content-Type': 'application/json',
       Accept: 'application/hal+json'
     };
-    if (this.serviceAccessToken) {
-      headersWithToken = {
-        ...headers,
-        'x-jwt': `Bearer ${this.serviceAccessToken}`
-      };
-    }
+    const jwtHeader: { 'x-jwt': string } | Record<string, never> =
+      serviceAccessToken ? { 'x-jwt': `Bearer ${serviceAccessToken}` } : {};
     return fetch(`${this.url}/encoreJobs`, {
       method: 'POST',
-      headers: headersWithToken ? headersWithToken : headers,
+      headers: { ...contentHeaders, ...jwtHeader },
       body: JSON.stringify(job)
     });
   }
 
   async createEncoreJob(creative: ManifestAsset): Promise<Response> {
+    let sat;
+    if (this.oscToken) {
+      const ctx = new Context({
+        personalAccessToken: this.oscToken
+      });
+      sat = await ctx.getServiceAccessToken('encore');
+    }
+    logger.info(sat);
     const job: EncoreJob = {
       externalId: creative.creativeId,
       profile: 'program',
@@ -45,6 +53,6 @@ export class EncoreClient {
         }
       ]
     };
-    return this.submitJob(job);
+    return this.submitJob(job, sat);
   }
 }
