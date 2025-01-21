@@ -1,10 +1,10 @@
 export interface AdNormalizerConfiguration {
   encoreUrl: string;
   callbackListenerUrl: string;
-  minioUrl: string;
-  minioAccessKey: string;
-  minioSecretKey: string;
-  minioBucket: string;
+  s3Endpoint: string;
+  s3AccessKey: string;
+  s3SecretKey: string;
+  bucket: string;
   adServerUrl: string;
   redisUrl: string;
   serviceAccessToken?: string;
@@ -15,22 +15,29 @@ let config: AdNormalizerConfiguration | null = null;
 const loadConfiguration = (): AdNormalizerConfiguration => {
   const encoreUrl = process.env.ENCORE_URL;
   const callbackListenerUrl = process.env.CALLBACK_LISTENER_URL;
-  const minioUrl = process.env.MINIO_URL;
-  const minioAccessKey = process.env.MINIO_ACCESS_KEY;
-  const minioSecretKey = process.env.MINIO_SECRET_KEY;
+  const endpoint = process.env.S3_ENDPOINT;
+  const accessKey = process.env.S3_ACCESS_KEY;
+  const secretKey = process.env.S3_SECRET_KEY;
   const adServerUrl = process.env.AD_SERVER_URL;
   const redisUrl = process.env.REDIS_URL;
-  const minioBucket = process.env.MINIO_BUCKET;
+  const bucketRaw = process.env.OUTPUT_BUCKET_URL;
+  if (!bucketRaw) {
+    throw new Error('OUTPUT_BUCKET_URL is required');
+  }
+  const bucket = new URL(bucketRaw);
+  const bucketPath = bucket.pathname
+    ? bucket.hostname + '/' + bucket.pathname
+    : bucket.hostname;
   const serviceAccessToken = process.env.SERVICE_ACCESS_TOKEN;
   const configuration = {
     encoreUrl: encoreUrl,
     callbackListenerUrl: callbackListenerUrl,
-    minioUrl: minioUrl,
-    minioAccessKey: minioAccessKey,
-    minioSecretKey: minioSecretKey,
+    s3Endpoint: endpoint,
+    s3AccessKey: accessKey,
+    s3SecretKey: secretKey,
     adServerUrl: adServerUrl,
     redisUrl: redisUrl,
-    minioBucket: minioBucket,
+    bucket: bucketPath,
     serviceAccessToken: serviceAccessToken
   } as AdNormalizerConfiguration;
 

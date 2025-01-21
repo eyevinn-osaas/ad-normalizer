@@ -13,7 +13,7 @@ import { EncoreClient } from './encore/encoreclient';
 import { MinioClient, MinioNotification } from './minio/minio';
 
 const HelloWorld = Type.String({
-  description: 'The magical words!'
+  status: 'HEALTHY'
 });
 
 export interface HealthcheckOptions {
@@ -29,7 +29,7 @@ const healthcheck: FastifyPluginCallback<HealthcheckOptions> = (
     '/',
     {
       schema: {
-        description: 'Say hello',
+        description: 'Health check',
         response: {
           200: HelloWorld
         }
@@ -76,9 +76,9 @@ export default (opts: ApiOptions) => {
   );
 
   const minioClient = new MinioClient(
-    config.minioUrl,
-    config.minioAccessKey,
-    config.minioSecretKey
+    config.s3Endpoint,
+    config.s3AccessKey,
+    config.s3SecretKey
   );
 
   minioClient.setupClient();
@@ -109,14 +109,14 @@ export default (opts: ApiOptions) => {
 
   api.register(vastApi, {
     adServerUrl: config.adServerUrl,
-    assetServerUrl: `https://${config.minioUrl}/${config.minioBucket}/`,
+    assetServerUrl: `https://${config.s3Endpoint}/${config.bucket}/`,
     lookUpAsset: async (mediaFile: string) => redisclient.get(mediaFile),
     onMissingAsset: async (asset: ManifestAsset) =>
       encoreClient.createEncoreJob(asset),
     setupNotification: (asset: ManifestAsset) => {
       logger.debug('Setting up notification for asset', { asset });
       minioClient.listenForNotifications(
-        config.minioBucket,
+        config.bucket,
         asset.creativeId + '/', // TODO: Pass encore job id and add as part of the prefix
         'index.m3u8',
         async (notification: MinioNotification) =>

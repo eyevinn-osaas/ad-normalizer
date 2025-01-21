@@ -58,11 +58,17 @@ export const vastApi: FastifyPluginCallback<AdApiOptions> = (
                 const code = response.status;
                 const url = response.url;
                 const reason = response.statusText;
-                logger.error('Failed to submit encore job', {
-                  code,
-                  reason,
-                  url
-                });
+                if (code == 401) {
+                  logger.error(
+                    'Encore returned status code 401 Unauthorized. Check that your service access token is still valid.'
+                  );
+                } else {
+                  logger.error('Failed to submit encore job', {
+                    code,
+                    reason,
+                    url
+                  });
+                }
                 throw new Error('Failed to submit encore job');
               }
               return response.json();

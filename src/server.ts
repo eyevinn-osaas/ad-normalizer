@@ -2,7 +2,7 @@ import api from './api';
 import 'dotenv/config';
 import logger from './util/logger';
 
-const server = api({ title: '@eyevinn/typescript-nodejs' });
+const server = api({ title: '@eyevinn/ad-normalizer' });
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8000;
 
