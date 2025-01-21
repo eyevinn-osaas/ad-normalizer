@@ -8,11 +8,11 @@ export class RedisClient {
   async connect() {
     logger.info('Connecting to Redis', { url: this.url });
     if (this.client) {
-      logger.error('Redis client already connected');
+      logger.info('Redis client already connected');
       return;
     }
     this.client = await createClient({ url: this.url })
-      .on('error', (err) => logger.error('Redis error', { error: err }))
+      .on('error', (err) => logger.error('Redis error',  err ))
       .connect();
   }
 
@@ -31,6 +31,7 @@ export class RedisClient {
   }
 
   async set(key: string, value: string): Promise<void> {
+    logger.info('Setting key', { key, value });
     await this.connect();
     this.client?.set(key, value);
   }

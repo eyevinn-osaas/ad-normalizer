@@ -10,7 +10,7 @@ import getConfiguration from './config/config';
 import { RedisClient } from './redis/redisclient';
 import logger from './util/logger';
 import { EncoreClient } from './encore/encoreclient';
-import { MinioClient } from './minio/minio';
+import { MinioClient, MinioNotification } from './minio/minio';
 
 const HelloWorld = Type.String({
   description: 'The magical words!'
@@ -65,6 +65,7 @@ export default (opts: ApiOptions) => {
   redisclient.connect();
 
   const saveToRedis = (key: string, value: string) => {
+    logger.info('Saving to Redis', { key, value });
     redisclient.set(key, value);
   };
   logger.info(config.callbackListenerUrl);
@@ -79,6 +80,8 @@ export default (opts: ApiOptions) => {
     config.minioAccessKey,
     config.minioSecretKey
   );
+
+  minioClient.setupClient();
 
   const api = fastify({
     ignoreTrailingSlash: true
@@ -106,16 +109,20 @@ export default (opts: ApiOptions) => {
 
   api.register(vastApi, {
     adServerUrl: config.adServerUrl,
-    lookUpAsset: (mediaFile: string) => redisclient.get(mediaFile),
+    assetServerUrl: `https://${config.minioUrl}/${config.minioBucket}/`,
+    lookUpAsset: async (mediaFile: string) =>  redisclient.get(mediaFile),
     onMissingAsset: async (asset: ManifestAsset) =>
       encoreClient.createEncoreJob(asset),
-    setupNotification: (asset: ManifestAsset) =>
+    setupNotification: (asset: ManifestAsset) => {
+      logger.info('Setting up notification for asset', { asset });
       minioClient.listenForNotifications(
         config.minioBucket,
-        asset.creativeId,
+        asset.creativeId + '/', // TODO: Pass encore job id and add as part of the prefix
         'index.m3u8',
-        () => saveToRedis(asset.creativeId, asset.masterPlaylistUrl)
-      )
+        async (notification: MinioNotification) =>
+          await saveToRedis(asset.creativeId, notification.s3.object.key)
+      );
+    }
   });
   return api;
 };

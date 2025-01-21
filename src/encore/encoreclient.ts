@@ -39,7 +39,7 @@ export class EncoreClient {
       progressCallbackUri: this.callbackUrl,
       inputs: [
         {
-          uri: 'https://testcontent.eyevinn.technology/mp4/stswe-tvplus-promo.mp4', // TODO: Use the correct URI from the VAST response
+          uri: creative.masterPlaylistUrl,
           seekTo: 0,
           copyTs: true,
           type: InputType.AUDIO_VIDEO

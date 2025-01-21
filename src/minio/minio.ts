@@ -1,6 +1,17 @@
 import * as Minio from 'minio';
 import logger from '../util/logger';
 
+export interface MinioNotification {
+  s3: {
+    bucket: {
+      name: string;
+    };
+    object: {
+      key: string;
+    };
+  };
+}
+
 export class MinioClient {
   private minioclient: Minio.Client | undefined;
   constructor(
@@ -26,21 +37,32 @@ export class MinioClient {
     bucketName: string,
     assetId: string,
     masterPlaylistName: string,
-    onNotification: (r: any) => void
+    onNotification: (r: any) => Promise<void>
   ) => {
     logger.info('Listening for notifications', {
       bucketName,
       assetId,
       masterPlaylistName
     });
+    if (this.minioclient == undefined) {
+      logger.error('Minio client not connected');
+    } else {
+      logger.info('Minio client connected');
+    }
     const poller = this.minioclient?.listenBucketNotification(
       bucketName,
       assetId,
       masterPlaylistName,
       ['s3:ObjectCreated:*']
     );
+    if (poller == undefined) {
+      logger.error('Failed to create poller');
+    } else {
+      logger.info('Poller created');
+    }
     poller?.on('notification', (record) => {
-      onNotification(record);
+      logger.info('Received notification', record);
+      onNotification(record as MinioNotification);
       poller.stop();
     });
   };

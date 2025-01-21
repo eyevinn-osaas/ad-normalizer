@@ -17,6 +17,7 @@ export type ManifestResponse = Static<typeof ManifestResponse>;
 
 export interface AdApiOptions {
   adServerUrl: string;
+  assetServerUrl: string;
   lookUpAsset: (mediaFile: string) => Promise<string | null | undefined>;
   onMissingAsset?: (asset: ManifestAsset) => Promise<Response>;
   setupNotification?: (asset: ManifestAsset) => void;
@@ -71,15 +72,23 @@ export const vastApi: FastifyPluginCallback<AdApiOptions> = (
               const encoreJobId = data.id;
               logger.info('Submitted encore job', { encoreJobId });
               if (opts.setupNotification) {
+                logger.info('Setting up notification');
                 opts.setupNotification(creative);
+                logger.info("Notification set up. You're good to go!");
               }
             })
             .catch((error) => {
-              logger.error('Failed to handle missing asset', { error });
+              logger.error('Failed to handle missing asset', error);
             });
         }
       });
-      reply.send({ assets: found } as ManifestResponse);
+      const withBaseUrl = found.map((asset: ManifestAsset) => {
+        return {
+          creativeId: asset.creativeId,
+          masterPlaylistUrl: opts.assetServerUrl + '/' + asset.masterPlaylistUrl
+        };
+      });
+      reply.send({ assets: withBaseUrl } as ManifestResponse); // TODO: add endpoint here!
     }
   );
   next();
@@ -91,7 +100,8 @@ const partitionCreatives = async (
 ): Promise<ManifestAsset[][]> => {
   const [found, missing]: [ManifestAsset[], ManifestAsset[]] = [[], []];
   for (const creative of creatives) {
-    const asset = await lookUpAsset(creative.masterPlaylistUrl);
+    const asset = await lookUpAsset(creative.creativeId);
+    logger.info('Looking up asset', { creative, asset });
     if (asset) {
       found.push({ creativeId: creative.creativeId, masterPlaylistUrl: asset });
     } else {
