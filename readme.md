@@ -6,12 +6,12 @@ The service accepts requests to the endpoint `api/v1/vast`, and returns a JSON a
 
 ```json
 {
-"assets": [
+  "assets": [
     {
-        "creativeId": "abcd1234",
-        "masterPlaylistUrl": "https://your-minio-endpoint/creativeId/substring/index.m3u8
-    },
-]
+      "creativeId": "abcd1234",
+      "masterPlaylistUrl": "https://your-minio-endpoint/creativeId/substring/index.m3u8"
+    }
+  ]
 }
 ```
 
@@ -62,7 +62,7 @@ When developing, it is highly recommended that you put the required variables in
 Before pushing changes to the repo, please run the following steps to make sure your pipeline will succeed:
 
 - `npm run test` to verify that your changes do not break existing functionality (if adding features, it is good practice to also write tests).
-- `npm run lint` as well as `npm run pretty` to ensure that the code still follows the formatting standards. Errors should be fixed, as the pipeline won't succeed otherwise. Warnings should be handled on a case-by-case basis.
+- `npm run lint` as well as `npm run pretty` to ensure that the code still follows the formatting standards. Errors should be fixed, as the pipeline won't succeed otherwise. Warnings should be handled on a case-by-case basis. To format all files in the `src/` directory, run `npm run format`.
 
 ### Contributing
 

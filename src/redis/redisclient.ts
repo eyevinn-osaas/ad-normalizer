@@ -6,14 +6,15 @@ export class RedisClient {
   constructor(private url: string) {}
 
   async connect() {
-    logger.info('Connecting to Redis', { url: this.url });
-    if (this.client) {
+    if (this.client != null) {
       logger.info('Redis client already connected');
       return;
     }
+    logger.info('Connecting to Redis', { url: this.url });
     this.client = await createClient({ url: this.url })
       .on('error', (err) => logger.error('Redis error', err))
       .connect();
+    return;
   }
 
   async disconnect() {

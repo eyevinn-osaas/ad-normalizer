@@ -135,15 +135,18 @@ const getCreatives = async (
     .then((body) => {
       const parser = new XMLParser();
       const parsedVAST = parser.parse(body);
-      const creatives = parsedVAST.VAST.Ad.reduce((acc: ManifestAsset[], ad: any) => {
-        const adId = ad.InLine.Creatives.Creative.UniversalAdId.replace(
-          /[^a-zA-Z0-9]/g,
-          ''
-        );
-        const mediaFile =
-          ad.InLine.Creatives.Creative.Linear.MediaFiles.MediaFile;
-        return [...acc, { creativeId: adId, masterPlaylistUrl: mediaFile }];
-      }, []);
+      const creatives = parsedVAST.VAST.Ad.reduce(
+        (acc: ManifestAsset[], ad: any) => {
+          const adId = ad.InLine.Creatives.Creative.UniversalAdId.replace(
+            /[^a-zA-Z0-9]/g,
+            ''
+          );
+          const mediaFile =
+            ad.InLine.Creatives.Creative.Linear.MediaFiles.MediaFile;
+          return [...acc, { creativeId: adId, masterPlaylistUrl: mediaFile }];
+        },
+        []
+      );
       return creatives;
     })
     .catch((error) => {

@@ -46,8 +46,6 @@ export class MinioClient {
     });
     if (this.minioclient == undefined) {
       logger.error('Minio client not connected');
-    } else {
-      logger.info('Minio client connected');
     }
     const poller = this.minioclient?.listenBucketNotification(
       bucketName,
@@ -57,8 +55,6 @@ export class MinioClient {
     );
     if (poller == undefined) {
       logger.error('Failed to create poller');
-    } else {
-      logger.debug('Poller created');
     }
     poller?.on('notification', (record) => {
       logger.debug('Received notification', record);
