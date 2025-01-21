@@ -42,14 +42,14 @@ Note: the ad normalizer assumes that your packager is set up with the output sub
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------- |
 | `ENCORE_URL`            | The URL of your encore instance                                                                                            | none          |
 | `CALLBACK_LISTENER_URL` | The URL of your callback listener                                                                                          | none          |
-| `MINIO_URL`             | The minio instance endpoint                                                                                                | none          |
-| `MINIO_ACCESS_KEY`      | Your minio access key                                                                                                      | none          |
-| `MINIO_SECRET_KEY`      | Your minio secret key                                                                                                      | none          |
+| `S3_ENDPOINT`           | The S3 instance endpoint endpoint                                                                                          | none          |
+| `S3_ACCESS_KEY`         | Your S3 access key                                                                                                         | none          |
+| `S3_SECRET_KEY`         | Your S3 secret key                                                                                                         | none          |
 | `LOG_LEVEL`             | The log level of the service                                                                                               | Info          |
 | `REDIS_URL`             | The url of your redis instance                                                                                             | none          |
 | `AD_SERVER_URL`         | The url of your ad server                                                                                                  | none          |
 | `PORT`                  | The port that the server listens on                                                                                        | 8000          |
-| `MINIO_BUCKET`          | The bucket that the packaged assets will be placed into                                                                    | none          |
+| `OUTPUT_BUCKET_URL`     | The url to the output folder for the packaged assets                                                                       | none          |
 | `SERVICE_ACCESS_TOKEN`  | your OSC service access token for encore (only needed when running the service outside OSC with an encore instance in OSC) | none          |
 
 ### starting the service
