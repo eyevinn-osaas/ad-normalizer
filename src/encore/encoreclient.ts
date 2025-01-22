@@ -15,7 +15,6 @@ export class EncoreClient {
     serviceAccessToken?: string
   ): Promise<Response> {
     logger.info('Submitting job to Encore', { job });
-    let headersWithToken = undefined;
     const contentHeaders = {
       'Content-Type': 'application/json',
       Accept: 'application/hal+json'
