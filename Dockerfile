@@ -9,10 +9,10 @@ USER node
 WORKDIR /app
 COPY --chown=node:node ["package.json", "package-lock.json*", "tsconfig*.json", "./"]
 COPY --chown=node:node ["src", "./src"]
-COPY docker-entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY docker-entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 # Delete prepare script to avoid errors from husky
 RUN npm pkg delete scripts.prepare \
     && npm ci --omit=dev
-ENTRYPOINT [ "/entrypoint.sh" ]
+ENTRYPOINT [ "/app/entrypoint.sh" ]
 CMD [ "npm", "run", "start" ]
