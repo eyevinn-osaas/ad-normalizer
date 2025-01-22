@@ -7,7 +7,7 @@ export interface AdNormalizerConfiguration {
   bucket: string;
   adServerUrl: string;
   redisUrl: string;
-  serviceAccessToken?: string;
+  oscToken?: string;
 }
 
 let config: AdNormalizerConfiguration | null = null;
@@ -28,7 +28,7 @@ const loadConfiguration = (): AdNormalizerConfiguration => {
   const bucketPath = bucket.pathname
     ? bucket.hostname + '/' + bucket.pathname
     : bucket.hostname;
-  const serviceAccessToken = process.env.SERVICE_ACCESS_TOKEN;
+  const oscToken = process.env.OSC_ACCESS_TOKEN;
   const configuration = {
     encoreUrl: encoreUrl,
     callbackListenerUrl: callbackListenerUrl,
@@ -38,7 +38,7 @@ const loadConfiguration = (): AdNormalizerConfiguration => {
     adServerUrl: adServerUrl,
     redisUrl: redisUrl,
     bucket: bucketPath,
-    serviceAccessToken: serviceAccessToken
+    oscToken: oscToken
   } as AdNormalizerConfiguration;
 
   return configuration;

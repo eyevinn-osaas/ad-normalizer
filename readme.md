@@ -38,19 +38,19 @@ Note: the ad normalizer assumes that your packager is set up with the output sub
 
 ### Environment variables
 
-| Variable                | Description                                                                                                                | Default value |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| `ENCORE_URL`            | The URL of your encore instance                                                                                            | none          |
-| `CALLBACK_LISTENER_URL` | The URL of your callback listener                                                                                          | none          |
-| `S3_ENDPOINT`           | The S3 instance endpoint endpoint                                                                                          | none          |
-| `S3_ACCESS_KEY`         | Your S3 access key                                                                                                         | none          |
-| `S3_SECRET_KEY`         | Your S3 secret key                                                                                                         | none          |
-| `LOG_LEVEL`             | The log level of the service                                                                                               | Info          |
-| `REDIS_URL`             | The url of your redis instance                                                                                             | none          |
-| `AD_SERVER_URL`         | The url of your ad server                                                                                                  | none          |
-| `PORT`                  | The port that the server listens on                                                                                        | 8000          |
-| `OUTPUT_BUCKET_URL`     | The url to the output folder for the packaged assets                                                                       | none          |
-| `SERVICE_ACCESS_TOKEN`  | your OSC service access token for encore (only needed when running the service outside OSC with an encore instance in OSC) | none          |
+| Variable                | Description                                                           | Default value |
+| ----------------------- | --------------------------------------------------------------------- | ------------- |
+| `ENCORE_URL`            | The URL of your encore instance                                       | none          |
+| `CALLBACK_LISTENER_URL` | The URL of your callback listener                                     | none          |
+| `S3_ENDPOINT`           | The S3 instance endpoint endpoint                                     | none          |
+| `S3_ACCESS_KEY`         | Your S3 access key                                                    | none          |
+| `S3_SECRET_KEY`         | Your S3 secret key                                                    | none          |
+| `LOG_LEVEL`             | The log level of the service                                          | Info          |
+| `REDIS_URL`             | The url of your redis instance                                        | none          |
+| `AD_SERVER_URL`         | The url of your ad server                                             | none          |
+| `PORT`                  | The port that the server listens on                                   | 8000          |
+| `OUTPUT_BUCKET_URL`     | The url to the output folder for the packaged assets                  | none          |
+| `OSC_ACCESS_TOKEN`      | your OSC access token. Only needed when running encore in Eyevinn OSC | none          |
 
 ### starting the service
 
