@@ -1,8 +1,18 @@
 # Ad Normalizer
 
-A Proxy put in fron of an ad server that dispatches transcoding and packaging of VAST creatives.
+A Proxy put in front of an ad server that dispatches transcoding and packaging of VAST and VMAP creatives.
 
-The service accepts requests to the endpoint `api/v1/vast`, and returns a JSON array with the following structure:
+[![Badge OSC](https://img.shields.io/badge/Evaluate-24243B?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMTIiIGZpbGw9InVybCgjcGFpbnQwX2xpbmVhcl8yODIxXzMxNjcyKSIvPgo8Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI3IiBzdHJva2U9ImJsYWNrIiBzdHJva2Utd2lkdGg9IjIiLz4KPGRlZnM%2BCjxsaW5lYXJHcmFkaWVudCBpZD0icGFpbnQwX2xpbmVhcl8yODIxXzMxNjcyIiB4MT0iMTIiIHkxPSIwIiB4Mj0iMTIiIHkyPSIyNCIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPgo8c3RvcCBzdG9wLWNvbG9yPSIjQzE4M0ZGIi8%2BCjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzREQzlGRiIvPgo8L2xpbmVhckdyYWRpZW50Pgo8L2RlZnM%2BCjwvc3ZnPgo%3D)](https://app.osaas.io/browse/eyevinn-ad-normalizer)
+
+The service provides two main endpoints:
+
+### VAST Endpoint
+
+The service accepts requests to the endpoint `api/v1/vast`, and returns a JSON array with the following structure if no conent type is requested:
+
+```
+% curl -v "http://localhost:8000/api/v1/vast?dur=30"
+```
 
 ```json
 {
@@ -11,11 +21,65 @@ The service accepts requests to the endpoint `api/v1/vast`, and returns a JSON a
       "creativeId": "abcd1234",
       "masterPlaylistUrl": "https://your-minio-endpoint/creativeId/substring/index.m3u8"
     }
+  ],
+  "xml": "<VAST...>"
+}
+```
+
+or modified VAST XML if `application/xml` content-type is requested:
+
+```
+% curl -v -H 'accept: application/xml' "http://localhost:8000/api/v1/vast?dur=30"
+```
+
+if `application/json` content-type is explicitly requested, the normalizer returns JSON conforming to the asset list standard used for HLS interstitials:
+
+```
+% curl -v -H 'accept: application/json' "http://localhost:8000/api/v1/vast?dur=30"
+```
+
+results in:
+
+```json
+{
+  "ASSETS": [
+    {
+      "DURATION": "30",
+      "URI": "https://your-minio-endpoint/creativeId/substring/index.m3u8"
+    }
   ]
 }
 ```
 
-The service uses redis to keep track of transcoded creatives, and returns the master playlist URL if one is found; if the service does not know of any packaged assets for a creative, it creates a transcoding and packaging pipeline, and monitors the provided minio bucket for asset uploads. Once the assets are in place, the master playlist URL is added to the redis cache.
+### VMAP Endpoint
+
+The service also accepts requests to the endpoint `api/v1/vmap`, which handles VMAP (Video Multiple Ad Playlist) documents. The endpoint returns XML with transcoded assets:
+
+```
+% curl -v "http://localhost:8000/api/v1/vmap"
+```
+
+```json
+{
+  "assets": [
+    {
+      "creativeId": "abcd1234",
+      "masterPlaylistUrl": "https://your-minio-endpoint/creativeId/substring/index.m3u8"
+    }
+  ],
+  "xml": "<vmap:VMAP...>"
+}
+```
+
+For XML response:
+
+```
+% curl -v -H 'accept: application/xml' "http://localhost:8000/api/v1/vmap"
+```
+
+The VMAP endpoint processes all VAST ads within the VMAP document, ensuring that all video assets are properly transcoded and available in HLS format.
+
+The service uses redis to keep track of transcoded creatives, and returns the master playlist URL if one is found; if the service does not know of any packaged assets for a creative, it creates a transcoding and packaging pipeline, and monitors the provided minio bucket for asset uploads. Once the assets are in place, the master playlist URL is added to the redis cache. Redis is also used as a distributed lock to avoid multiple jobs being created for the same creative.
 
 ## Requirements
 
@@ -38,19 +102,22 @@ Note: the ad normalizer assumes that your packager is set up with the output sub
 
 ### Environment variables
 
-| Variable                | Description                                                           | Default value | Mandatory |
-| ----------------------- | --------------------------------------------------------------------- | ------------- | --------- |
-| `ENCORE_URL`            | The URL of your encore instance                                       | none          | yes       |
-| `CALLBACK_LISTENER_URL` | The URL of your encore callback listener                              | none          | yes       |
-| `S3_ENDPOINT`           | The S3 instance endpoint endpoint                                     | none          | yes       |
-| `S3_ACCESS_KEY`         | Your S3 access key                                                    | none          | yes       |
-| `S3_SECRET_KEY`         | Your S3 secret key                                                    | none          | yes       |
-| `LOG_LEVEL`             | The log level of the service                                          | Info          | no        |
-| `REDIS_URL`             | The url of your redis instance                                        | none          | yes       |
-| `AD_SERVER_URL`         | The url of your ad server                                             | none          | yes       |
-| `PORT`                  | The port that the server listens on                                   | 8000          | no        |
-| `OUTPUT_BUCKET_URL`     | The url to the output folder for the packaged assets                  | none          | yes       |
-| `OSC_ACCESS_TOKEN`      | your OSC access token. Only needed when running encore in Eyevinn OSC | none          | no        |
+| Variable                | Description                                                                                                                                           | Default value  | Mandatory |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | --------- |
+| `ENCORE_URL`            | The URL of your encore instance                                                                                                                       | none           | yes       |
+| `CALLBACK_LISTENER_URL` | The URL of your encore callback listener                                                                                                              | none           | yes       |
+| `S3_ENDPOINT`           | The S3 instance endpoint endpoint                                                                                                                     | none           | yes       |
+| `S3_ACCESS_KEY`         | Your S3 access key                                                                                                                                    | none           | yes       |
+| `S3_SECRET_KEY`         | Your S3 secret key                                                                                                                                    | none           | yes       |
+| `LOG_LEVEL`             | The log level of the service                                                                                                                          | Info           | no        |
+| `REDIS_URL`             | The url of your redis instance                                                                                                                        | none           | yes       |
+| `AD_SERVER_URL`         | The url of your ad server                                                                                                                             | none           | yes       |
+| `PORT`                  | The port that the server listens on                                                                                                                   | 8000           | no        |
+| `OUTPUT_BUCKET_URL`     | The url to the output folder for the packaged assets                                                                                                  | none           | yes       |
+| `OSC_ACCESS_TOKEN`      | your OSC access token. Only needed when running encore in Eyevinn OSC                                                                                 | none           | no        |
+| `KEY_FIELD`             | The VAST field used as key in the cache. possible non-default values are `resolution` and `url`. If no value is provided, it used the universal Ad Id | universalAdId  | no        |
+| `KEY_REGEX`             | RegExp string used to strip away unwanted characters from the key string                                                                              | `[^a-zA-Z0-9]` | no        |
+| `ENCORE_PROFILE`        | The transcoding profile used by encore when processing the ads                                                                                        | program        | no        |
 
 ### starting the service
 

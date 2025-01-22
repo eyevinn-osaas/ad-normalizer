@@ -6,11 +6,18 @@ import { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
 import { Static, Type } from '@sinclair/typebox';
 import { FastifyPluginCallback } from 'fastify';
 import { ManifestAsset, vastApi } from './vast/vastApi';
+import { vmapApi } from './vmap/vmapApi';
 import getConfiguration from './config/config';
-import { RedisClient } from './redis/redisclient';
+import { DEFAULT_TTL, RedisClient } from './redis/redisclient';
 import logger from './util/logger';
 import { EncoreClient } from './encore/encoreclient';
-import { MinioClient, MinioNotification } from './minio/minio';
+import { MinioClient } from './minio/minio';
+import { TranscodeInfo, TranscodeStatus } from './data/transcodeinfo';
+import { EncoreService } from './encore/encoreservice';
+import { PackagingService } from './packaging/packagingservice';
+import { encoreCallbackApi } from './encore/encorecallbackapi';
+import { packagingCallbackApi } from './packaging/packagingcallbackapi';
+import { EncoreJob } from './encore/types';
 
 const HelloWorld = Type.String({
   status: 'HEALTHY'
@@ -60,18 +67,22 @@ export default (opts: ApiOptions) => {
     );
   }
 
-  const redisclient = new RedisClient(config.redisUrl);
+  const redisclient = new RedisClient(
+    config.redisUrl,
+    config.packagingQueueName
+  );
 
   redisclient.connect();
 
-  const saveToRedis = (key: string, value: string) => {
+  const saveToRedis = (key: string, value: string, ttl: number) => {
     logger.info('Saving to Redis', { key, value });
-    redisclient.set(key, value);
+    redisclient.set(key, value, ttl);
   };
   logger.debug('callback listener URL:', config.callbackListenerUrl);
   const encoreClient = new EncoreClient(
     config.encoreUrl,
     config.callbackListenerUrl,
+    config.encoreProfile,
     config.oscToken
   );
 
@@ -79,6 +90,24 @@ export default (opts: ApiOptions) => {
     config.s3Endpoint,
     config.s3AccessKey,
     config.s3SecretKey
+  );
+
+  const encoreService = new EncoreService(
+    encoreClient,
+    config.jitPackaging,
+    redisclient,
+    `https://${config.s3Endpoint}/${config.bucket}/`,
+    config.inFlightTtl ? config.inFlightTtl : DEFAULT_TTL,
+    config.rootUrl,
+    config.encoreUrl,
+    config.bucketUrl
+  );
+
+  const packagingService = new PackagingService(
+    redisclient,
+    encoreClient,
+    `https://${config.s3Endpoint}/${config.bucket}/`,
+    config.inFlightTtl ? config.inFlightTtl : DEFAULT_TTL
   );
 
   minioClient.setupClient();
@@ -110,19 +139,78 @@ export default (opts: ApiOptions) => {
   api.register(vastApi, {
     adServerUrl: config.adServerUrl,
     assetServerUrl: `https://${config.s3Endpoint}/${config.bucket}/`,
-    lookUpAsset: async (mediaFile: string) => redisclient.get(mediaFile),
-    onMissingAsset: async (asset: ManifestAsset) =>
-      encoreClient.createEncoreJob(asset),
-    setupNotification: (asset: ManifestAsset) => {
-      logger.debug('Setting up notification for asset', { asset });
-      minioClient.listenForNotifications(
-        config.bucket,
-        asset.creativeId + '/', // TODO: Pass encore job id and add as part of the prefix
-        'index.m3u8',
-        async (notification: MinioNotification) =>
-          await saveToRedis(asset.creativeId, notification.s3.object.key)
-      );
+    keyField: config.keyField,
+    keyRegex: new RegExp(config.keyRegex, 'g'),
+    encoreService: encoreService,
+    lookUpAsset: async (mediaFile: string) =>
+      redisclient.getTranscodeStatus(mediaFile),
+    onMissingAsset: async (asset: ManifestAsset) => {
+      const inProgressInfo: TranscodeInfo = {
+        url: '',
+        aspectRatio: '',
+        framerates: [],
+        status: TranscodeStatus.IN_PROGRESS
+      };
+      return encoreService.createEncoreJob(asset).then((res: Response) => {
+        if (res.ok) {
+          redisclient.saveTranscodeStatus(
+            asset.creativeId,
+            inProgressInfo,
+            config.inFlightTtl ? config.inFlightTtl : DEFAULT_TTL
+          );
+          res.json().then((data: EncoreJob) => {
+            logger.info('Encore job created', { jobId: data.id });
+          });
+          return Promise.resolve(inProgressInfo);
+        } else {
+          logger.error('Failed to start job', { asset });
+          return Promise.resolve(null);
+        }
+      });
     }
   });
+
+  api.register(vmapApi, {
+    adServerUrl: config.adServerUrl,
+    assetServerUrl: `https://${config.s3Endpoint}/${config.bucket}/`,
+    keyField: config.keyField,
+    keyRegex: new RegExp(config.keyRegex, 'g'),
+    encoreService: encoreService,
+    lookUpAsset: async (mediaFile: string) =>
+      redisclient.getTranscodeStatus(mediaFile),
+    onMissingAsset: async (asset: ManifestAsset) => {
+      const inProgressInfo: TranscodeInfo = {
+        url: '',
+        aspectRatio: '',
+        framerates: [],
+        status: TranscodeStatus.IN_PROGRESS
+      };
+      return encoreService.createEncoreJob(asset).then((res: Response) => {
+        if (res.ok) {
+          redisclient.saveTranscodeStatus(
+            asset.creativeId,
+            inProgressInfo,
+            config.inFlightTtl ? config.inFlightTtl : DEFAULT_TTL
+          );
+          res.json().then((data: EncoreJob) => {
+            logger.info('Encore job created', { jobId: data.id });
+          });
+          return Promise.resolve(inProgressInfo);
+        } else {
+          logger.error('Failed to start job', { asset });
+          return Promise.resolve(null);
+        }
+      });
+    }
+  });
+
+  api.register(encoreCallbackApi, {
+    encoreService: encoreService
+  });
+
+  api.register(packagingCallbackApi, {
+    packagingService: packagingService
+  });
+
   return api;
 };

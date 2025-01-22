@@ -1,6 +1,5 @@
 import { EncoreClient } from './encoreclient';
 import { EncoreJob, InputType } from './types';
-import { ManifestAsset } from '../vast/vastApi';
 
 jest.mock('../util/logger', () => ({
   info: jest.fn()
@@ -57,7 +56,7 @@ describe('EncoreClient', () => {
   });
 
   it('Should not append access token if none is provided', async () => {
-    encoreClient = new EncoreClient(url, callbackUrl);
+    encoreClient = new EncoreClient(url, callbackUrl, 'test-profile');
     const job: EncoreJob = {
       externalId: '123',
       profile: 'program',
