@@ -1,10 +1,11 @@
-import fastify, { FastifyPluginCallback } from 'fastify';
+import { FastifyPluginCallback } from 'fastify';
+import { default as PathUtils } from 'path';
 import { Static, Type } from '@sinclair/typebox';
 import fastifyAcceptsSerializer from '@fastify/accepts-serializer';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
 import logger from '../util/logger';
-import { serialize } from 'v8';
 import { timestampToSeconds } from '../util/time';
+import { removeTrailingSlash } from '../util/string';
 
 export const ManifestAsset = Type.Object({
   creativeId: Type.String(),
@@ -160,7 +161,10 @@ const fetchVastAndDispatchJobs = async (
   const withBaseUrl = found.map((asset: ManifestAsset) => {
     return {
       creativeId: asset.creativeId,
-      masterPlaylistUrl: opts.assetServerUrl + '/' + asset.masterPlaylistUrl
+      masterPlaylistUrl: PathUtils.join(
+        opts.assetServerUrl,
+        asset.masterPlaylistUrl
+      )
     };
   });
   return { assets: withBaseUrl, vastXml };
