@@ -36,7 +36,6 @@ export class EncoreClient {
       });
       sat = await ctx.getServiceAccessToken('encore');
     }
-    logger.info(sat);
     const job: EncoreJob = {
       externalId: creative.creativeId,
       profile: 'program',
