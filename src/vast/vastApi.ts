@@ -1,17 +1,11 @@
 import { FastifyPluginCallback } from 'fastify';
-import { default as PathUtils } from 'path';
 import { Static, Type } from '@sinclair/typebox';
 import fastifyAcceptsSerializer from '@fastify/accepts-serializer';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
 import logger from '../util/logger';
 import { timestampToSeconds } from '../util/time';
-import { IN_PROGRESS } from '../redis/redisclient';
-
-export interface EncoreJob {
-  id: string;
-  status?: string;
-  creativeId?: string;
-}
+import { TranscodeInfo, TranscodeStatus } from '../data/transcodeinfo';
+import { EncoreService } from '../encore/encoreservice';
 
 export const ManifestAsset = Type.Object({
   creativeId: Type.String(),
@@ -46,9 +40,11 @@ export interface AdApiOptions {
   assetServerUrl: string;
   keyField: string;
   keyRegex: RegExp;
-  lookUpAsset: (mediaFile: string) => Promise<string | null | undefined>;
-  onMissingAsset?: (asset: ManifestAsset) => Promise<Response>;
-  setupNotification?: (asset: ManifestAsset) => void;
+  encoreService: EncoreService;
+  lookUpAsset: (mediaFile: string) => Promise<TranscodeInfo | null | undefined>;
+  onMissingAsset?: (
+    asset: ManifestAsset
+  ) => Promise<TranscodeInfo | null | undefined>;
 }
 
 export const AlwaysArray = [
@@ -220,17 +216,17 @@ export const vastApi: FastifyPluginCallback<AdApiOptions> = (
 
 const partitionCreatives = async (
   creatives: ManifestAsset[],
-  lookUpAsset: (mediaFile: string) => Promise<string | null | undefined>
+  lookUpAsset: (mediaFile: string) => Promise<TranscodeInfo | null | undefined>
 ): Promise<ManifestAsset[][]> => {
   const [found, missing]: [ManifestAsset[], ManifestAsset[]] = [[], []];
   for (const creative of creatives) {
     const asset = await lookUpAsset(creative.creativeId);
     logger.debug('Looking up asset', { creative, asset });
-    if (asset && asset) {
-      if (asset !== IN_PROGRESS) {
+    if (asset) {
+      if (asset.status == TranscodeStatus.COMPLETED) {
         found.push({
           creativeId: creative.creativeId,
-          masterPlaylistUrl: asset
+          masterPlaylistUrl: asset.url
         });
       }
     } else {
@@ -263,52 +259,24 @@ const findMissingAndDispatchJobs = async (
     if (opts.onMissingAsset) {
       opts
         ?.onMissingAsset(creative)
-        .then((response) => {
-          if (!response.ok) {
-            const code = response.status;
-            const url = response.url;
-            const reason = response.statusText;
-            if (code == 401) {
-              logger.error(
-                'Encore returned status code 401 Unauthorized. Check that your service access token is still valid.'
-              );
-            } else {
-              logger.error('Failed to submit encore job', {
-                code,
-                reason,
-                url
-              });
-            }
-            throw new Error('Failed to submit encore job');
-          }
-          return response.json() as Promise<EncoreJob>;
-        })
-        .then((data) => {
-          const encoreJobId = data.id;
-          logger.info('Submitted encore job', { encoreJobId, creative });
-          if (opts.setupNotification) {
-            logger.debug('Setting up notification');
-            opts.setupNotification(creative);
-            logger.debug("Notification set up. You're good to go!");
+        .then((data: TranscodeInfo | null | undefined) => {
+          if (!data) {
+            logger.error(
+              "Encore job missing external ID, we won't be able to keep track of it!"
+            );
+          } else {
+            logger.info('Submitted encore job', { creative });
           }
         })
         .catch((error) => {
           logger.error('Failed to handle missing asset', error);
+          throw new Error('Failed to submit encore job');
         });
     }
   });
-  const withBaseUrl = found.map((asset: ManifestAsset) => {
-    return {
-      creativeId: asset.creativeId,
-      masterPlaylistUrl: PathUtils.join(
-        opts.assetServerUrl,
-        asset.masterPlaylistUrl
-      )
-    };
-  });
   const builder = new XMLBuilder({ format: true, ignoreAttributes: false });
   const vastXml = builder.build(vastXmlObj);
-  return { assets: withBaseUrl, xml: vastXml };
+  return { assets: found, xml: vastXml };
 };
 
 const getVastXml = async (
@@ -321,6 +289,7 @@ const getVastXml = async (
     for (const [key, value] of params) {
       url.searchParams.append(key, value);
     }
+    url.searchParams.append('rt', 'vast');
     logger.info(`Fetching VAST request from ${url.toString()}`);
     const response = await fetch(url, {
       method: 'GET',

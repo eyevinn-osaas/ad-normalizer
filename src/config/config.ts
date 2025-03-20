@@ -1,5 +1,6 @@
 import path from 'path';
 import { removeTrailingSlash } from '../util/string';
+import logger from '../util/logger';
 
 export interface AdNormalizerConfiguration {
   encoreUrl: string;
@@ -14,6 +15,11 @@ export interface AdNormalizerConfiguration {
   inFlightTtl?: number;
   keyField: string;
   keyRegex: string;
+  encoreProfile: string;
+  jitPackaging: boolean;
+  packagingQueueName?: string;
+  rootUrl: string;
+  bucketUrl: URL;
 }
 
 let config: AdNormalizerConfiguration | null = null;
@@ -58,6 +64,17 @@ const loadConfiguration = (): AdNormalizerConfiguration => {
   const keyField = process.env.KEY_FIELD;
   const keyRegex = process.env.KEY_REGEX;
 
+  const encoreProfile = process.env.ENCORE_PROFILE;
+  const jitPackaging = process.env.JIT_PACKAGING === 'true';
+  const packagingQueueName = process.env.PACKAGING_QUEUE;
+
+  const rootUrl = process.env.ROOT_URL;
+  if (!rootUrl) {
+    throw new Error(
+      'ROOT_URL is required, otherwise encore callbacks will not work'
+    );
+  }
+
   const configuration = {
     encoreUrl: removeTrailingSlash(encoreUrl.toString()),
     callbackListenerUrl: callbackListenerUrl.toString(),
@@ -70,7 +87,12 @@ const loadConfiguration = (): AdNormalizerConfiguration => {
     oscToken: oscToken,
     inFlightTtl: inFlightTtl ? parseInt(inFlightTtl) : null,
     keyField: keyField ? keyField.toLowerCase() : 'UniversalAdId'.toLowerCase(),
-    keyRegex: keyRegex ? keyRegex : '[^a-zA-Z0-9]'
+    keyRegex: keyRegex ? keyRegex : '[^a-zA-Z0-9]',
+    encoreProfile: encoreProfile ? encoreProfile : 'program',
+    jitPackaging: jitPackaging,
+    packagingQueueName: packagingQueueName,
+    rootUrl: rootUrl,
+    bucketUrl: bucket
   } as AdNormalizerConfiguration;
 
   return configuration;
