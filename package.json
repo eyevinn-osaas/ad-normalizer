@@ -1,6 +1,6 @@
 {
   "name": "@eyevinn/ad-normalizer",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Normalizes ad creatives",
   "scripts": {
     "test": "jest",
