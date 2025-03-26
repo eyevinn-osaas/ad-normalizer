@@ -13,3 +13,11 @@ export const createPackageUrl = (
     assetServerUrl
   ).href;
 };
+
+export const createOutputUrl = (bucket: URL, folder: string): string | null => {
+  try {
+    return new URL(PathUtils.join(bucket.pathname, folder), bucket).href + '/';
+  } catch (e) {
+    return null;
+  }
+};
