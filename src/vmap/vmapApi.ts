@@ -10,10 +10,12 @@ import {
   MediaFile,
   isArray,
   VastAd,
-  getKey
+  getKey,
+  deviceUserAgentHeader
 } from '../vast/vastApi';
 import logger from '../util/logger';
 import { TranscodeInfo, TranscodeStatus } from '../data/transcodeinfo';
+import { getHeaderValue } from '../util/headers';
 
 interface VmapAdBreak {
   '@_breakId'?: string;
@@ -84,13 +86,37 @@ export const vmapApi: FastifyPluginCallback<AdApiOptions> = (
     },
     async (req, reply) => {
       const path = req.url;
-      const vmapStr = await getVmapXml(opts.adServerUrl, path);
+      const headers = req.headers;
+      const deviceUserAgent = getHeaderValue(
+        headers,
+        deviceUserAgentHeader.toLowerCase()
+      );
+      const forwardedFor = getHeaderValue(
+        headers,
+        'X-Forwarded-For'.toLowerCase()
+      );
+      let vmapReqHeaders = {};
+      if (deviceUserAgent) {
+        vmapReqHeaders = {
+          ...vmapReqHeaders,
+          [deviceUserAgentHeader]: deviceUserAgent
+        };
+      } else {
+        logger.error('Missing device user agent header');
+      }
+      if (forwardedFor) {
+        vmapReqHeaders = { ...vmapReqHeaders, 'X-Forwarded-For': forwardedFor };
+      } else {
+        logger.error('Missing X-Forwarded-For header');
+      }
+      const vmapStr = await getVmapXml(opts.adServerUrl, path, vmapReqHeaders);
       const vmapXml = parseVmap(vmapStr);
       const response = await findMissingAndDispatchJobs(
         vmapXml as VmapXmlObject,
         opts
       );
       reply.send(response);
+      return reply;
     }
   );
 
@@ -124,6 +150,7 @@ export const vmapApi: FastifyPluginCallback<AdApiOptions> = (
       const vmapXml = req.body;
       const response = await findMissingAndDispatchJobs(vmapXml, opts);
       reply.send(response);
+      return reply;
     }
   );
   next();
@@ -197,9 +224,10 @@ const findMissingAndDispatchJobs = async (
   return { assets: found, xml: vmapXml };
 };
 
-const getVmapXml = async (
+export const getVmapXml = async (
   adServerUrl: string,
-  path: string
+  path: string,
+  headers: Record<string, string> = {}
 ): Promise<string> => {
   try {
     const url = new URL(adServerUrl);
@@ -207,12 +235,13 @@ const getVmapXml = async (
     for (const [key, value] of params) {
       url.searchParams.append(key, value);
     }
-    url.searchParams.append('rt', 'vmap');
     logger.info(`Fetching VMAP request from ${url.toString()}`);
     const response = await fetch(url, {
       method: 'GET',
       headers: {
-        'Content-Type': 'application/xml'
+        ...headers,
+        'Content-Type': 'application/xml',
+        'User-Agent': 'eyevinn/ad-normalizer'
       }
     });
     if (!response.ok) {

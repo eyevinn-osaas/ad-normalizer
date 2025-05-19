@@ -1,4 +1,4 @@
-import { createClient } from 'redis';
+import { createClient, createCluster } from 'redis';
 import logger from '../util/logger';
 import { TranscodeInfo } from '../data/transcodeinfo';
 
@@ -7,9 +7,36 @@ export const DEFAULT_TTL = 1800; // TTL of 30 minutes to account for queue time
 
 export class RedisClient {
   private client: Awaited<ReturnType<typeof createClient>> | null = null;
-  constructor(private url: string, private packagingQueueName?: string) {}
+  private cluster: Awaited<ReturnType<typeof createCluster>> | null = null;
+  constructor(
+    private url: string,
+    private packagingQueueName?: string,
+    private clusterMode: boolean = false
+  ) {}
+
+  async connectCluster() {
+    logger.info('Connecting to Redis cluster', { url: this.url });
+    if (this.cluster != null) {
+      logger.info('Redis cluster already connected');
+      return;
+    }
+    logger.info('Connecting to Redis cluster', { url: this.url });
+    const urls = this.url.split(',');
+    const rootNodes = urls.map((url) => {
+      return { url: url };
+    });
+    this.cluster = createCluster({
+      rootNodes: rootNodes
+    }).on('error', (err) => logger.error('Redis cluster error:', err));
+    await this.cluster.connect();
+    return;
+  }
 
   async connect() {
+    if (this.clusterMode) {
+      await this.connectCluster();
+      return;
+    }
     if (this.client != null) {
       logger.info('Redis client already connected');
       return;
@@ -34,11 +61,11 @@ export class RedisClient {
 
   async get(key: string): Promise<string | null | undefined> {
     await this.connect();
-    if (this?.client == null) {
+    if (this?.client == null && this?.cluster == null) {
       logger.error('Redis client not connected');
     }
     logger.info('Getting key', { key });
-    return this.client?.get(key);
+    return this.clusterMode ? this.cluster?.get(key) : this.client?.get(key);
   }
 
   async getTranscodeStatus(key: string): Promise<TranscodeInfo | null> {
@@ -53,14 +80,18 @@ export class RedisClient {
   async set(key: string, value: string, ttl: number): Promise<void> {
     logger.info('Setting key', { key, value });
     await this.connect();
-    this.client?.set(key, value);
+    this.clusterMode
+      ? this.cluster?.set(key, value)
+      : this.client?.set(key, value);
     await this.setTtl(key, ttl);
   }
 
   async setTtl(key: string, ttl: number): Promise<void> {
     if (ttl > 0) {
       logger.info('Setting key expiration', { key, ttl });
-      await this.client?.expire(key, ttl);
+      this.clusterMode
+        ? await this.cluster?.expire(key, ttl)
+        : await this.client?.expire(key, ttl);
     } else {
       const expireTime = await this.client?.expireTime(key);
       if (expireTime != undefined) {
@@ -72,7 +103,9 @@ export class RedisClient {
             logger.error('Key does not exist', { key });
             break;
           default:
-            await this.client?.persist(key);
+            this.clusterMode
+              ? await this.cluster?.persist(key)
+              : await this.client?.persist(key);
         }
       }
     }
@@ -80,7 +113,9 @@ export class RedisClient {
 
   async delete(key: string): Promise<void> {
     await this.connect();
-    await this.client?.del(key);
+    this.clusterMode
+      ? await this.cluster?.del(key)
+      : await this.client?.del(key);
   }
 
   async saveTranscodeStatus(
@@ -99,9 +134,14 @@ export class RedisClient {
       return;
     }
     // Null check below needs to be handled way better
-    await this.client?.zAdd(this.packagingQueueName, {
-      score: Date.now(),
-      value: stringifiedJob
-    });
+    this.clusterMode
+      ? await this.cluster?.zAdd(this.packagingQueueName, {
+          score: Date.now(),
+          value: stringifiedJob
+        })
+      : await this.client?.zAdd(this.packagingQueueName, {
+          score: Date.now(),
+          value: stringifiedJob
+        });
   }
 }

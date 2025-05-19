@@ -6,6 +6,9 @@ import logger from '../util/logger';
 import { timestampToSeconds } from '../util/time';
 import { TranscodeInfo, TranscodeStatus } from '../data/transcodeinfo';
 import { EncoreService } from '../encore/encoreservice';
+import { getHeaderValue } from '../util/headers';
+
+export const deviceUserAgentHeader = 'X-Device-User-Agent';
 
 export const ManifestAsset = Type.Object({
   creativeId: Type.String(),
@@ -160,10 +163,30 @@ export const vastApi: FastifyPluginCallback<AdApiOptions> = (
     },
     async (req, reply) => {
       const path = req.url;
-      const vastStr = await getVastXml(opts.adServerUrl, path);
+      const headers = req.headers;
+      let vastReqHeaders = {};
+      const deviceUserAgent = getHeaderValue(
+        headers,
+        deviceUserAgentHeader.toLowerCase()
+      );
+      const forwardedFor = getHeaderValue(
+        headers,
+        'X-Forwarded-For'.toLowerCase()
+      );
+      if (deviceUserAgent) {
+        vastReqHeaders = {
+          ...vastReqHeaders,
+          [deviceUserAgentHeader]: deviceUserAgent
+        };
+      }
+      if (forwardedFor) {
+        vastReqHeaders = { ...vastReqHeaders, 'X-Forwarded-For': forwardedFor };
+      }
+      const vastStr = await getVastXml(opts.adServerUrl, path, vastReqHeaders);
       const vastXml = parseVast(vastStr);
       const response = await findMissingAndDispatchJobs(vastXml, opts);
       reply.send(response);
+      return reply;
     }
   );
 
@@ -209,6 +232,7 @@ export const vastApi: FastifyPluginCallback<AdApiOptions> = (
       const vastXml = req.body;
       const response = await findMissingAndDispatchJobs(vastXml, opts);
       reply.send(response);
+      return reply;
     }
   );
   next();
@@ -281,7 +305,8 @@ const findMissingAndDispatchJobs = async (
 
 const getVastXml = async (
   adServerUrl: string,
-  path: string
+  path: string,
+  headers: Record<string, string> = {}
 ): Promise<string> => {
   try {
     const url = new URL(adServerUrl);
@@ -289,12 +314,13 @@ const getVastXml = async (
     for (const [key, value] of params) {
       url.searchParams.append(key, value);
     }
-    url.searchParams.append('rt', 'vast');
     logger.info(`Fetching VAST request from ${url.toString()}`);
     const response = await fetch(url, {
       method: 'GET',
       headers: {
-        'Content-Type': 'application/xml'
+        ...headers,
+        'Content-Type': 'application/xml',
+        'User-Agent': 'eyevinn/ad-normalizer'
       }
     });
     if (!response.ok) {
