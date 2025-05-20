@@ -12,7 +12,6 @@ import getConfiguration from './config/config';
 import { DEFAULT_TTL, RedisClient } from './redis/redisclient';
 import logger from './util/logger';
 import { EncoreClient } from './encore/encoreclient';
-import { MinioClient } from './minio/minio';
 import { TranscodeInfo, TranscodeStatus } from './data/transcodeinfo';
 import { EncoreService } from './encore/encoreservice';
 import { PackagingService } from './packaging/packagingservice';
@@ -80,25 +79,18 @@ export default (opts: ApiOptions) => {
     logger.info('Saving to Redis', { key, value });
     redisclient.set(key, value, ttl);
   };
-  logger.debug('callback listener URL:', config.callbackListenerUrl);
+
   const encoreClient = new EncoreClient(
     config.encoreUrl,
-    config.callbackListenerUrl,
     config.encoreProfile,
     config.oscToken
-  );
-
-  const minioClient = new MinioClient(
-    config.s3Endpoint,
-    config.s3AccessKey,
-    config.s3SecretKey
   );
 
   const encoreService = new EncoreService(
     encoreClient,
     config.jitPackaging,
     redisclient,
-    `https://${config.s3Endpoint}/${config.bucket}/`,
+    config.assetServerUrl.href,
     config.inFlightTtl ? config.inFlightTtl : DEFAULT_TTL,
     config.rootUrl,
     config.encoreUrl,
@@ -108,13 +100,9 @@ export default (opts: ApiOptions) => {
   const packagingService = new PackagingService(
     redisclient,
     encoreClient,
-    config.assetServerUrl
-      ? config.assetServerUrl
-      : `https://${config.s3Endpoint}/${config.bucket}/`,
+    config.assetServerUrl,
     config.inFlightTtl ? config.inFlightTtl : DEFAULT_TTL
   );
-
-  minioClient.setupClient();
 
   const api = fastify({
     ignoreTrailingSlash: true
@@ -146,9 +134,7 @@ export default (opts: ApiOptions) => {
 
   api.register(vastApi, {
     adServerUrl: config.adServerUrl,
-    assetServerUrl: config.assetServerUrl
-      ? config.assetServerUrl
-      : `https://${config.s3Endpoint}/${config.bucket}/`,
+    assetServerUrl: config.assetServerUrl.href,
     keyField: config.keyField,
     keyRegex: new RegExp(config.keyRegex, 'g'),
     encoreService: encoreService,
@@ -186,9 +172,7 @@ export default (opts: ApiOptions) => {
 
   api.register(vmapApi, {
     adServerUrl: config.adServerUrl,
-    assetServerUrl: config.assetServerUrl
-      ? config.assetServerUrl
-      : `https://${config.s3Endpoint}/${config.bucket}/`,
+    assetServerUrl: config.assetServerUrl.href,
     keyField: config.keyField,
     keyRegex: new RegExp(config.keyRegex, 'g'),
     encoreService: encoreService,
