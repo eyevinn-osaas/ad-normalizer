@@ -1,9 +1,16 @@
+// eslint-disable-next-line
+const crypto = require('crypto'); // required to do it this way for jest to mock it
 import { calculateAspectRatio } from './aspectratio';
 import { getHeaderValue } from './headers';
 import { createOutputUrl, createPackageUrl } from './string';
 import { timestampToSeconds } from './time';
 
 describe('time utils', () => {
+  beforeEach(() => {
+    jest
+      .spyOn(crypto, 'randomUUID')
+      .mockReturnValue('00000000-0000-0000-0000-000000000000');
+  });
   it('deserializes timestamps correctly', () => {
     let timestamp = '00:00:15';
     let parsed = timestampToSeconds(timestamp);
@@ -58,9 +65,11 @@ describe('string utils', () => {
     expect(actual).toBe(expected);
   });
   it('constructs an output url correctly', () => {
+    const uuid = crypto.randomUUID();
+
     const bucket = new URL('s3://test-bucket.osaas.io');
     const folder = 'test-folder';
-    const expected = 's3://test-bucket.osaas.io/test-folder/';
+    const expected = 's3://test-bucket.osaas.io/test-folder/' + uuid + '/';
     const actual = createOutputUrl(bucket, folder);
     expect(actual).toBe(expected);
   });

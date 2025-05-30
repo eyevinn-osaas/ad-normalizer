@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { default as PathUtils } from 'path';
 
 export const removeTrailingSlash = (url: string): string => {
@@ -21,7 +22,10 @@ export const createPackageUrl = (
 
 export const createOutputUrl = (bucket: URL, folder: string): string | null => {
   try {
-    return new URL(PathUtils.join(bucket.pathname, folder), bucket).href + '/';
+    return (
+      new URL(PathUtils.join(bucket.pathname, folder, randomUUID()), bucket)
+        .href + '/'
+    );
   } catch (e) {
     return null;
   }
