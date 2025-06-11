@@ -8,6 +8,7 @@ import { TranscodeInfo, TranscodeStatus } from '../data/transcodeinfo';
 import { EncoreService } from '../encore/encoreservice';
 import { getHeaderValue } from '../util/headers';
 import { replaceSubDomain } from '../util/string';
+import { trace, Span } from '@opentelemetry/api';
 
 export const deviceUserAgentHeader = 'X-Device-User-Agent';
 
@@ -183,10 +184,33 @@ export const vastApi: FastifyPluginCallback<AdApiOptions> = (
       if (forwardedFor) {
         vastReqHeaders = { ...vastReqHeaders, 'X-Forwarded-For': forwardedFor };
       }
-      const vastStr = await getVastXml(opts.adServerUrl, path, vastReqHeaders);
-      const vastXml = parseVast(vastStr);
-      const response = await findMissingAndDispatchJobs(vastXml, opts);
+      const response = await trace
+        .getTracerProvider()
+        .getTracer('/api/v1/vast')
+        .startActiveSpan('VAST API Request', async (span: Span) => {
+          span.addEvent('Fetching VAST from ad server');
+
+          const vastStr = await getVastXml(
+            opts.adServerUrl,
+            path,
+            vastReqHeaders
+          );
+
+          span.addEvent('Fetched VAST from ad server');
+          span.addEvent('Parsing VAST XML');
+
+          const vastXml = parseVast(vastStr);
+          span.addEvent('Parsed VAST XML successfully');
+
+          const response = await findMissingAndDispatchJobs(vastXml, opts);
+
+          span.addEvent('Found missing assets and dispatched jobs');
+          span.end();
+          return response;
+        });
+
       reply.send(response);
+
       return reply;
     }
   );
@@ -319,6 +343,7 @@ const getVastXml = async (
         url.searchParams.append(key, value);
       }
     }
+
     logger.info(`Fetching VAST request from ${url.toString()}`);
     const response = await fetch(url, {
       method: 'GET',
@@ -373,29 +398,50 @@ const replaceMediaFiles = (
 ): string => {
   try {
     const parser = new XMLParser({ ignoreAttributes: false, isArray: isArray });
-    const parsedVAST = parser.parse(vastXml);
-    if (parsedVAST.VAST.Ad) {
-      const vastAds = Array.isArray(parsedVAST.VAST.Ad)
-        ? parsedVAST.VAST.Ad
-        : [parsedVAST.VAST.Ad];
+    const built = trace
+      .getTracerProvider()
+      .getTracer('/api/v1/vast')
+      .startActiveSpan('Replace Media Files in VAST', (span: Span) => {
+        span.addEvent('Parsing VAST XML for media file replacement');
 
-      parsedVAST.VAST.Ad = vastAds.reduce((acc: VastAd[], vastAd: VastAd) => {
-        const adId = getKey(keyField, keyRegex, vastAd);
-        const asset = assets.find((a) => a.creativeId === adId);
-        if (asset) {
-          const mediaFile = getBestMediaFileFromVastAd(vastAd);
-          mediaFile['#text'] = asset.masterPlaylistUrl;
-          mediaFile['@_type'] = 'application/x-mpegURL';
-          vastAd.InLine.Creatives.Creative.Linear.MediaFiles.MediaFile =
-            mediaFile;
-          acc.push(vastAd);
+        const parsedVAST = parser.parse(vastXml);
+        span.addEvent('Parsed VAST XML successfully');
+
+        if (parsedVAST.VAST.Ad) {
+          span.addEvent('Replacing media files in VAST Ad');
+
+          const vastAds = Array.isArray(parsedVAST.VAST.Ad)
+            ? parsedVAST.VAST.Ad
+            : [parsedVAST.VAST.Ad];
+
+          parsedVAST.VAST.Ad = vastAds.reduce(
+            (acc: VastAd[], vastAd: VastAd) => {
+              const adId = getKey(keyField, keyRegex, vastAd);
+              const asset = assets.find((a) => a.creativeId === adId);
+              if (asset) {
+                const mediaFile = getBestMediaFileFromVastAd(vastAd);
+                mediaFile['#text'] = asset.masterPlaylistUrl;
+                mediaFile['@_type'] = 'application/x-mpegURL';
+                vastAd.InLine.Creatives.Creative.Linear.MediaFiles.MediaFile =
+                  mediaFile;
+                acc.push(vastAd);
+              }
+              return acc;
+            },
+            []
+          );
+          span.addEvent('Replaced media files in VAST Ad');
         }
-        return acc;
-      }, []);
-    }
+        span.addEvent('Building XML from modified VAST');
 
-    const builder = new XMLBuilder({ format: true, ignoreAttributes: false });
-    return builder.build(parsedVAST);
+        const builder = new XMLBuilder({
+          format: true,
+          ignoreAttributes: false
+        });
+        span.end();
+        return builder.build(parsedVAST);
+      });
+    return built;
   } catch (error) {
     logger.error('Failed to replace media files in VAST', error);
     return vastXml;
