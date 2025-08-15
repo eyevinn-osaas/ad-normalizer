@@ -1,18 +1,38 @@
-ARG NODE_IMAGE=node:23-alpine
+FROM --platform=$BUILDPLATFORM golang:1.24.4-alpine AS base
 
-FROM ${NODE_IMAGE}
-ENV NODE_ENV=production
-EXPOSE 8000
-RUN mkdir /app
-COPY ./docker-entrypoint.sh /app/entrypoint.sh
-RUN chown node:node /app
-RUN chmod +x /app/entrypoint.sh
-USER node
-WORKDIR /app
-COPY --chown=node:node ["package.json", "package-lock.json*", "tsconfig*.json", "./"]
-COPY --chown=node:node ["src", "./src"]
-# Delete prepare script to avoid errors from husky
-RUN npm pkg delete scripts.prepare \
-    && npm ci --omit=dev
-ENTRYPOINT [ "/app/entrypoint.sh" ]
-CMD [ "npm", "run", "start" ]
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/nonexistent" \
+    --shell "/sbin/nologin" \
+    --no-create-home \
+    --uid 65532 \
+    small-user
+
+RUN apk add --no-cache tzdata
+## Needed if downstream users want to export metrics to f.ex. cloudwatch
+RUN apk update 
+RUN apk add curl tar 
+
+WORKDIR $GOPATH/src/smallest-golang/app/
+
+COPY --chown=small-user:small-user ./docker-entrypoint.sh /app/entrypoint.sh
+COPY ./cmd/ad-normalizer/ /cmd/ad-normalizer/
+COPY ./internal/ /internal/
+COPY ./go.mod /go.mod
+COPY ./go.sum /go.sum
+
+
+RUN go mod download
+RUN go mod verify
+
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-s -w" -o /app/ad-normalizer /cmd/ad-normalizer
+
+USER small-user:small-user
+ENV TZ=GMT
+
+RUN echo $(ls /app)
+
+ENTRYPOINT ["sh", "/app/entrypoint.sh"]
+CMD ["/app/ad-normalizer"]

@@ -19,29 +19,19 @@ The service provides two main endpoints:
 
 ### VAST Endpoint
 
-The service accepts requests to the endpoint `api/v1/vast`, and returns a JSON array with the following structure if no conent type is requested:
+The service accepts requests to the endpoint `api/v1/vast`; if the request specifies the content type as `application/xml` or leaves it blank, 
+it will return a modified VAST file where the mediafile objects have their links replaced with playlist URLs.
 
 ```
-% curl -v "http://localhost:8000/api/v1/vast?dur=30"
+% curl -v  "http://localhost:8000/api/v1/vast?dur=30"
 ```
-
-```json
-{
-  "assets": [
-    {
-      "creativeId": "abcd1234",
-      "masterPlaylistUrl": "https://your-minio-endpoint/creativeId/substring/index.m3u8"
-    }
-  ],
-  "xml": "<VAST...>"
-}
-```
-
-or modified VAST XML if `application/xml` content-type is requested:
+or
 
 ```
 % curl -v -H 'accept: application/xml' "http://localhost:8000/api/v1/vast?dur=30"
 ```
+
+will return the same XML result.
 
 if `application/json` content-type is explicitly requested, the normalizer returns JSON conforming to the asset list standard used for HLS interstitials:
 
@@ -69,24 +59,12 @@ The service also accepts requests to the endpoint `api/v1/vmap`, which handles V
 ```
 % curl -v "http://localhost:8000/api/v1/vmap"
 ```
-
-```json
-{
-  "assets": [
-    {
-      "creativeId": "abcd1234",
-      "masterPlaylistUrl": "https://your-minio-endpoint/creativeId/substring/index.m3u8"
-    }
-  ],
-  "xml": "<vmap:VMAP...>"
-}
-```
-
-For XML response:
+or 
 
 ```
 % curl -v -H 'accept: application/xml' "http://localhost:8000/api/v1/vmap"
 ```
+will return a modified VMAP
 
 The VMAP endpoint processes all VAST ads within the VMAP document, ensuring that all video assets are properly transcoded and available in HLS format.
 
@@ -132,11 +110,13 @@ Note: the ad normalizer assumes that your packager is set up with the output sub
 
 ## Development
 
-When developing, it is highly recommended that you put the required variables in a dotenv file at the repository root. This will make it easier to iterate and change environment variables throughout the development process.
+When developing, it is recommended that you put the required variables in a dotenv file at the repository root. This will make it easier to iterate and change environment variables throughout the development process.
 Before pushing changes to the repo, please run the following steps to make sure your pipeline will succeed:
 
-- `npm run test` to verify that your changes do not break existing functionality (if adding features, it is good practice to also write tests).
-- `npm run lint` as well as `npm run pretty` to ensure that the code still follows the formatting standards. Errors should be fixed, as the pipeline won't succeed otherwise. Warnings should be handled on a case-by-case basis. To format all files in the `src/` directory, run `npm run format`.
+- `make test` to verify that your changes do not break existing functionality (if adding features, it is good practice to also write tests).
+- If you are adding new features, it is also recommended to run `make coverage` in order to make sure that the new functionality has adequate test coverage.
+- `make lint` will run `golangci-lint` to ensure that the code still follows the formatting standards. Errors should be fixed, as the pipeline won't succeed otherwise. Warnings should be handled on a case-by-case basis.
+- `make format` will run `gofmt` on the entire codebase.
 
 ### Contributing
 
