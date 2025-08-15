@@ -19,12 +19,13 @@ The service provides two main endpoints:
 
 ### VAST Endpoint
 
-The service accepts requests to the endpoint `api/v1/vast`; if the request specifies the content type as `application/xml` or leaves it blank, 
+The service accepts requests to the endpoint `api/v1/vast`; if the request specifies the content type as `application/xml` or leaves it blank,
 it will return a modified VAST file where the mediafile objects have their links replaced with playlist URLs.
 
 ```
 % curl -v  "http://localhost:8000/api/v1/vast?dur=30"
 ```
+
 or
 
 ```
@@ -59,11 +60,13 @@ The service also accepts requests to the endpoint `api/v1/vmap`, which handles V
 ```
 % curl -v "http://localhost:8000/api/v1/vmap"
 ```
-or 
+
+or
 
 ```
 % curl -v -H 'accept: application/xml' "http://localhost:8000/api/v1/vmap"
 ```
+
 will return a modified VMAP
 
 The VMAP endpoint processes all VAST ads within the VMAP document, ensuring that all video assets are properly transcoded and available in HLS format.
@@ -103,6 +106,13 @@ Note: the ad normalizer assumes that your packager is set up with the output sub
 | `KEY_REGEX`         | RegExp string used to strip away unwanted characters from the key string                                                                              | `[^a-zA-Z0-9]` | no        |
 | `ENCORE_PROFILE`    | The transcoding profile used by encore when processing the ads                                                                                        | program        | no        |
 | `ASSET_SERVER_URL`  | Base URL used in the links created for manifests. Typical use case is a CDN URL. If not set, a https version of output bucket URL is used             | none           | no        |
+| `REDIS_CLUSTER`     | Flag to signal that redis is in cluster mode. Only needed when actually running redis in cluster mode                                                 | false          | no        |
+| `JIT_PACKAGE`       | Signals whether packaging of ads is performed JIT. If set, the normalizer does not create packaging jobs                                              | false          | no        |
+| `PACKAGING_QUEUE`   | The name of the redis queue used for packaging jobs                                                                                                   | package        | no        |
+| `ROOT_URL`          | The root url of the service in your environment, f.ex. `normalizer.domain.com`. used when creating callback URLs for transcoding and packaging jobs   | none           | yes       |
+| `IN_FLIGHT_TTL`     | The amount of time (in seconds) that a job can go without updates while still being considered in progress                                            | 3600           | no        |
+| `VERSION`           | The service version. Used for metrics and telemetry                                                                                                   | none           | no        |
+| `ENVIRONMENT`       | The environment the service is running in. Used for telemetry and metrics                                                                             | none           | no        |
 
 ### starting the service
 
