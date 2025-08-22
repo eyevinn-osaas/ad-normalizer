@@ -13,11 +13,16 @@ import (
 	"github.com/valkey-io/valkey-go"
 )
 
+const BLACKLIST_KEY = "blacklist"
+
 type Store interface {
 	Get(key string) (structure.TranscodeInfo, bool, error)
 	Set(key string, value structure.TranscodeInfo, ttl ...int64) error
 	Delete(key string) error
 	EnqueuePackagingJob(queueName string, packagingJob structure.PackagingQueueMessage) error
+	BlackList(value string) error
+	InBlackList(value string) (bool, error)
+	RemoveFromBlackList(value string) error
 }
 
 type ValkeyStore struct {
@@ -164,5 +169,56 @@ func (vs *ValkeyStore) EnqueuePackagingJob(queueName string, packagingJob struct
 	if err != nil {
 		return fmt.Errorf("failed to enqueue packaging job %s: %w", packagingJob, err)
 	}
+	return nil
+}
+
+func (vs *ValkeyStore) BlackList(value string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := vs.client.Do(
+		ctx,
+		vs.client.B().
+			Zadd().
+			Key(BLACKLIST_KEY).
+			ScoreMember().
+			ScoreMember(float64(time.Now().UnixMilli()), value).
+			Build()).
+		Error()
+	if err != nil {
+		return fmt.Errorf("failed to add key %s to blacklist: %w", value, err)
+	}
+	logger.Info("Added URL to blacklist", slog.String("key", value))
+	return nil
+}
+
+func (vs *ValkeyStore) InBlackList(value string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := vs.client.Do(ctx, vs.client.B().Zscore().Key(BLACKLIST_KEY).Member(value).Build()).AsFloat64()
+	if err != nil {
+		if errors.Is(err, valkey.Nil) {
+			return false, nil // Key is not in blacklist
+		}
+		return false, fmt.Errorf("failed to check if key %s is in blacklist: %w", value, err)
+	}
+	return true, nil // If score is >= 0, the key is in the blacklist
+}
+
+func (vs *ValkeyStore) RemoveFromBlackList(value string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := vs.client.Do(
+		ctx,
+		vs.client.B().
+			Zrem().
+			Key(BLACKLIST_KEY).
+			Member(value).
+			Build()).
+		Error()
+
+	if err != nil {
+		return fmt.Errorf("failed to remove key %s from blacklist: %w", value, err)
+	}
+	logger.Info("Removed URL from blacklist", slog.String("key", value))
 	return nil
 }
