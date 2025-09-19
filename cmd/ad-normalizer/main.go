@@ -25,8 +25,6 @@ import (
 	"github.com/klauspost/compress/gzhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
-
-	_ "net/http/pprof" // Import pprof for profiling
 )
 
 func main() {
