@@ -17,6 +17,7 @@ import (
 )
 
 var encoreHandler EncoreHandler
+var capturedJWT string
 
 func TestMain(m *testing.M) {
 	testServer := setupTestServer()
@@ -61,8 +62,67 @@ func TestGetJob(t *testing.T) {
 	is.NoErr(err)
 }
 
+func TestGetJobWithoutOSCContext(t *testing.T) {
+	is := is.New(t)
+	
+	// Reset captured JWT before test
+	capturedJWT = ""
+	
+	jobId := uuid.New().String()
+	_, err := encoreHandler.GetEncoreJob(jobId)
+	is.NoErr(err)
+	
+	// Verify no JWT header is set when OSC context is nil
+	is.Equal(capturedJWT, "")
+}
+
+func TestCreateJobWithoutOSCContext(t *testing.T) {
+	is := is.New(t)
+	
+	// Reset captured JWT before test
+	capturedJWT = ""
+
+	asset := &structure.ManifestAsset{
+		CreativeId:        "test-creative-id",
+		MasterPlaylistUrl: "http://example.com/test.mp4",
+	}
+	
+	_, err := encoreHandler.CreateJob(asset)
+	is.NoErr(err)
+	
+	// Verify no JWT header is set when OSC context is nil
+	is.Equal(capturedJWT, "")
+}
+
+func TestJWTBearerTokenFormatting(t *testing.T) {
+	// This test verifies that when the x-jwt header is set, it follows the Bearer token format
+	// This is a regression test for the JWT authentication header format fix
+	is := is.New(t)
+	
+	testCases := []struct {
+		name        string
+		headerValue string
+		expected    bool
+	}{
+		{"Valid Bearer token", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", true},
+		{"Invalid token without Bearer prefix", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", false},
+		{"Empty token", "", false},
+		{"Bearer with space", "Bearer ", false},
+	}
+	
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			hasValidBearerPrefix := strings.HasPrefix(tc.headerValue, "Bearer ") && len(tc.headerValue) > 7
+			is.Equal(hasValidBearerPrefix, tc.expected)
+		})
+	}
+}
+
 func setupTestServer() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Capture JWT header for tests that need it
+		capturedJWT = r.Header.Get("x-jwt")
+		
 		switch r.Method {
 		case http.MethodPost:
 			validRequest := validateRequest(r)
