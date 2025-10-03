@@ -59,6 +59,57 @@ func NewAPI(
 	}
 }
 
+type blacklistRequest struct {
+	MediaUrl string `json:"mediaUrl"`
+}
+
+func (api *API) HandleBlackList(w http.ResponseWriter, r *http.Request) {
+	_, span := otel.Tracer("api").Start(r.Context(), "HandleBlackList")
+	defer span.End()
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	bytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		logger.Error("failed to read request body", slog.String("error", err.Error()))
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	var blRequest blacklistRequest
+	if err := json.Unmarshal(bytes, &blRequest); err != nil {
+		logger.Error("failed to unmarshal request body", slog.String("error", err.Error()))
+		http.Error(w, "Failed to unmarshal request body", http.StatusBadRequest)
+		return
+	}
+	if r.Method == http.MethodPost {
+		err = api.valkeyStore.BlackList(blRequest.MediaUrl)
+		if err != nil {
+			logger.Error("failed to blacklist media URL",
+				slog.String("mediaUrl", blRequest.MediaUrl),
+				slog.String("error", err.Error()),
+			)
+			http.Error(w, "Failed to blacklist media URL", http.StatusInternalServerError)
+			return
+		}
+		logger.Info("blacklisted media URL", slog.String("mediaUrl", blRequest.MediaUrl))
+		w.WriteHeader(http.StatusNoContent)
+	}
+	if r.Method == http.MethodDelete {
+		err = api.valkeyStore.RemoveFromBlackList(blRequest.MediaUrl)
+		if err != nil {
+			logger.Error("failed to unblacklist media URL",
+				slog.String("mediaUrl", blRequest.MediaUrl),
+				slog.String("error", err.Error()),
+			)
+			http.Error(w, "Failed to unblacklist media URL", http.StatusInternalServerError)
+			return
+		}
+		logger.Info("unblacklisted media URL", slog.String("mediaUrl", blRequest.MediaUrl))
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func (api *API) HandleVmap(w http.ResponseWriter, r *http.Request) {
 	ctx, span := otel.Tracer("api").Start(r.Context(), "HandleVmap")
 	vmapData := vmap.VMAP{}
@@ -113,6 +164,8 @@ func (api *API) HandleVast(w http.ResponseWriter, r *http.Request) {
 
 	vastData := vmap.VAST{}
 	logger.Debug("Handling VAST request", slog.String("path", r.URL.Path))
+	qp := r.URL.Query()
+	fillerUrl := qp.Get("filler")
 	responseBody, err := api.makeAdServerRequest(r, ctx)
 	if err != nil {
 		logger.Error("failed to fetch VAST data", slog.String("error", err.Error()))
@@ -130,6 +183,12 @@ func (api *API) HandleVast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	logger.Debug("Decoded VAST data", slog.Int("adCount", len(vastData.Ad)))
+	if fillerUrl != "" {
+		logger.Debug("Adding filler to the end of the VAST",
+			slog.String("fillerUrl", fillerUrl),
+		)
+		vastData.Ad = append(vastData.Ad, util.CreateFillerAd(fillerUrl, len(vastData.Ad)+1))
+	}
 	api.findMissingAndDispatchJobs(&vastData)
 	var serializedVast []byte
 	requestedContentType := r.Header.Get("Accept")
@@ -167,7 +226,13 @@ func (api *API) makeAdServerRequest(r *http.Request, ctx context.Context) ([]byt
 	_, span := otel.Tracer("api").Start(ctx, "makeAdServerRequest")
 	defer span.End()
 	newUrl := api.adServerUrl
-	if subdomain := r.URL.Query().Get("subdomain"); subdomain != "" {
+	subdomain := ""
+	for k := range r.URL.Query() {
+		if strings.ToLower(k) == "subdomain" {
+			subdomain = r.URL.Query().Get(k)
+		}
+	}
+	if subdomain != "" {
 		logger.Debug("Replacing subdomain in URL",
 			slog.String("subdomain", subdomain),
 			slog.String("originalUrl", newUrl.String()),
@@ -229,11 +294,13 @@ func (api *API) processVmap(
 	breakWg := &sync.WaitGroup{}
 	for _, adBreak := range vmapData.AdBreaks {
 		logger.Debug("Processing ad break", slog.String("breakId", adBreak.Id))
-		breakWg.Add(1)
-		go func(vastData *vmap.VAST) {
-			defer breakWg.Done()
-			api.findMissingAndDispatchJobs(vastData)
-		}(adBreak.AdSource.VASTData.VAST)
+		if adBreak.AdSource.VASTData.VAST != nil {
+			breakWg.Add(1)
+			go func(vastData *vmap.VAST) {
+				defer breakWg.Done()
+				api.findMissingAndDispatchJobs(vastData)
+			}(adBreak.AdSource.VASTData.VAST)
+		}
 	}
 	breakWg.Wait()
 	return nil
@@ -290,6 +357,13 @@ func (api *API) partitionCreatives(
 			logger.Error("failed to get creative from store",
 				slog.String("error", err.Error()),
 				slog.String("creativeId", creative.CreativeId),
+			)
+			continue
+		}
+		if blacklisted, _ := api.valkeyStore.InBlackList(creative.MasterPlaylistUrl); blacklisted {
+			logger.Debug("creative is in blacklist, skipping",
+				slog.String("creativeId", creative.CreativeId),
+				slog.String("masterPlaylistUrl", creative.MasterPlaylistUrl),
 			)
 			continue
 		}

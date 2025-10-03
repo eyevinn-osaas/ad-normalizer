@@ -25,8 +25,6 @@ import (
 	"github.com/klauspost/compress/gzhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
-
-	_ "net/http/pprof" // Import pprof for profiling
 )
 
 func main() {
@@ -62,6 +60,7 @@ func main() {
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/vmap", api.HandleVmap)
 	apiMux.HandleFunc("/vast", api.HandleVast)
+	apiMux.HandleFunc("/blacklist", api.HandleBlackList)
 
 	packagerMux := http.NewServeMux()
 	packagerMux.HandleFunc("/success", api.HandlePackagingSuccess)

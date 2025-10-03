@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"io"
@@ -26,6 +27,7 @@ type StoreStub struct {
 	sets      int
 	gets      int
 	deletes   int
+	blacklist []string
 }
 
 // Delete implements store.Store.
@@ -54,6 +56,30 @@ func (s *StoreStub) reset() {
 	s.sets = 0
 	s.gets = 0
 	s.deletes = 0
+}
+
+func (s *StoreStub) BlackList(key string) error {
+	s.blacklist = append(s.blacklist, key)
+	return nil
+}
+
+func (s *StoreStub) InBlackList(key string) (bool, error) {
+	for _, blacklistedKey := range s.blacklist {
+		if blacklistedKey == key {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *StoreStub) RemoveFromBlackList(key string) error {
+	for i, blacklistedKey := range s.blacklist {
+		if blacklistedKey == key {
+			s.blacklist = append(s.blacklist[:i], s.blacklist[i+1:]...)
+			return nil
+		}
+	}
+	return nil // Key not found in blacklist, nothing to remove
 }
 
 func (s *StoreStub) EnqueuePackagingJob(queueName string, message structure.PackagingQueueMessage) error {
@@ -161,7 +187,12 @@ func TestReplaceVast(t *testing.T) {
 	vastReq.Header.Set("accept", "application/xml")
 	// make sure we request a VAST response
 	qps := vastReq.URL.Query()
+	newUrl := strings.Replace(testServer.URL, "127", "128", 1)
+	parsedUrl, err := url.Parse(newUrl)
+	is.NoErr(err)
+	api.adServerUrl = *parsedUrl
 	qps.Set("requestType", "vast")
+	qps.Set("subDomain", "127")
 	vastReq.URL.RawQuery = qps.Encode()
 	recorder := httptest.NewRecorder()
 	api.HandleVast(recorder, vastReq)
@@ -179,6 +210,113 @@ func TestReplaceVast(t *testing.T) {
 	is.Equal(mediaFile.Text, "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8")
 	is.Equal(mediaFile.Width, 718)
 	is.Equal(mediaFile.Height, 404)
+
+	realUrl, _ := url.Parse(testServer.URL)
+	api.adServerUrl = *realUrl // Reset to original URL
+
+	encoreHandler.reset()
+	storeStub.reset()
+}
+
+func TestReplaceVastWithBlacklisted(t *testing.T) {
+	is := is.New(t)
+	// Populate the store with one ad
+	re := regexp.MustCompile("[^a-zA-Z0-9]")
+	adKey := re.ReplaceAllString("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4", "")
+	transcodeInfo := structure.TranscodeInfo{
+		Url:         "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8",
+		AspectRatio: "16:9",
+		FrameRates:  []float64{25.0},
+		Status:      "COMPLETED",
+	}
+	_ = storeStub.Set(adKey, transcodeInfo)
+	vastReq, err := http.NewRequest(
+		"GET",
+		testServer.URL,
+		nil,
+	)
+	is.NoErr(err)
+	_ = storeStub.BlackList("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4")
+	vastReq.Header.Set("User-Agent", "TestUserAgent")
+	vastReq.Header.Set("X-Forwarded-For", "123.123.123")
+	vastReq.Header.Set("X-Device-User-Agent", "TestDeviceUserAgent")
+	vastReq.Header.Set("accept", "application/xml")
+	// make sure we request a VAST response
+	qps := vastReq.URL.Query()
+	is.NoErr(err)
+	qps.Set("requestType", "vast")
+	vastReq.URL.RawQuery = qps.Encode()
+	recorder := httptest.NewRecorder()
+	api.HandleVast(recorder, vastReq)
+	is.Equal(recorder.Result().StatusCode, http.StatusOK)
+	is.Equal(recorder.Result().Header.Get("Content-Type"), "application/xml")
+	defer recorder.Result().Body.Close()
+
+	responseBody, err := io.ReadAll(recorder.Result().Body)
+	is.NoErr(err)
+	vastRes, err := vmap.DecodeVast(responseBody)
+	is.NoErr(err)
+	is.Equal(len(vastRes.Ad), 0) // since the ad is blacklisted, we should not get any ads back
+
+	encoreHandler.reset()
+	storeStub.reset()
+	storeStub.blacklist = []string{} // Reset the blacklist
+}
+
+func TestReplaceVastWithFiller(t *testing.T) {
+	is := is.New(t)
+	re := regexp.MustCompile("[^a-zA-Z0-9]")
+	adKey := re.ReplaceAllString("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4", "")
+	transcodeInfo := structure.TranscodeInfo{
+		Url:         "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8",
+		AspectRatio: "16:9",
+		FrameRates:  []float64{25.0},
+		Status:      "COMPLETED",
+	}
+	_ = storeStub.Set(adKey, transcodeInfo)
+	// add a filler
+	fillerInfo := structure.TranscodeInfo{
+		Url:         "http://example.com/video.m3u8",
+		AspectRatio: "16:9",
+		FrameRates:  []float64{25.0},
+		Status:      "COMPLETED",
+	}
+	fillerKey := re.ReplaceAllString("http://example.com/video.mp4", "")
+	_ = storeStub.Set(fillerKey, fillerInfo)
+
+	vastReq, err := http.NewRequest(
+		"GET",
+		testServer.URL,
+		nil,
+	)
+	is.NoErr(err)
+	vastReq.Header.Set("User-Agent", "TestUserAgent")
+	vastReq.Header.Set("X-Forwarded-For", "123.123.123")
+	vastReq.Header.Set("X-Device-User-Agent", "TestDeviceUserAgent")
+	vastReq.Header.Set("accept", "application/xml")
+	qps := vastReq.URL.Query()
+	qps.Set("requestType", "vast")
+	qps.Set("filler", "http://example.com/video.mp4")
+	vastReq.URL.RawQuery = qps.Encode()
+	recorder := httptest.NewRecorder()
+	api.HandleVast(recorder, vastReq)
+	is.Equal(recorder.Result().StatusCode, http.StatusOK)
+	is.Equal(recorder.Result().Header.Get("Content-Type"), "application/xml")
+	defer recorder.Result().Body.Close()
+
+	responseBody, err := io.ReadAll(recorder.Result().Body)
+	is.NoErr(err)
+	vastRes, err := vmap.DecodeVast(responseBody)
+	is.NoErr(err)
+	is.Equal(len(vastRes.Ad), 2)
+	mediaFile := vastRes.Ad[0].InLine.Creatives[0].Linear.MediaFiles[0]
+	is.Equal(mediaFile.MediaType, "application/x-mpegURL")
+	is.Equal(mediaFile.Text, "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8")
+	is.Equal(mediaFile.Width, 718)
+	is.Equal(mediaFile.Height, 404)
+
+	filler := vastRes.Ad[1]
+	is.Equal(filler.Id, "NORMALIZER_FILLER")
 
 	encoreHandler.reset()
 	storeStub.reset()
@@ -224,6 +362,42 @@ func TestGetAssetList(t *testing.T) {
 	is.Equal(len(assetList), 1)
 	is.Equal(assetList[0].Uri, transcodeInfo.Url)
 	is.Equal(assetList[0].Duration, 10.25)
+
+	encoreHandler.reset()
+	storeStub.reset()
+}
+
+func TestEmptyVmap(t *testing.T) {
+	is := is.New(t)
+	vmapReq, err := http.NewRequest(
+		"GET",
+		testServer.URL+"/vmap",
+		nil,
+	)
+	is.NoErr(err)
+	vmapReq.Header.Set("User-Agent", "TestUserAgent")
+	vmapReq.Header.Set("X-Forwarded-For", "123.123.123")
+	vmapReq.Header.Set("X-Device-User-Agent", "TestDeviceUserAgent")
+	vmapReq.Header.Set("accept", "application/xml")
+	qps := vmapReq.URL.Query()
+	qps.Set("requestType", "vmap")
+	qps.Set("empty", "true") // tell test server to return empty vmap
+	vmapReq.URL.RawQuery = qps.Encode()
+	recorder := httptest.NewRecorder()
+	api.HandleVmap(recorder, vmapReq)
+	is.Equal(recorder.Result().StatusCode, http.StatusOK)
+	is.Equal(recorder.Result().Header.Get("Content-Type"), "application/xml")
+	defer recorder.Result().Body.Close()
+
+	responseBody, err := io.ReadAll(recorder.Result().Body)
+	is.NoErr(err)
+	vmapRes, err := vmap.DecodeVmap(responseBody)
+	is.NoErr(err)
+	is.Equal(len(vmapRes.AdBreaks), 1)
+	firstBreak := vmapRes.AdBreaks[0]
+	is.Equal(firstBreak.TimeOffset.Position, vmap.OffsetStart)
+	is.Equal(firstBreak.BreakType, "linear")
+	is.Equal(len(firstBreak.AdSource.VASTData.VAST.Ad), 0)
 
 	encoreHandler.reset()
 	storeStub.reset()
@@ -295,9 +469,42 @@ func TestReplaceVmap(t *testing.T) {
 	storeStub.reset()
 }
 
+func TestBlacklist(t *testing.T) {
+	is := is.New(t)
+	blacklistUrl := "https://adserver-assets.io/badfile.mp4"
+	reqBody := blacklistRequest{
+		MediaUrl: blacklistUrl,
+	}
+	serializedBody, err := json.Marshal(reqBody)
+	is.NoErr(err)
+	blacklistReq, err := http.NewRequest(
+		"POST",
+		testServer.URL+"/blacklist/",
+		bytes.NewBuffer(serializedBody),
+	)
+	is.NoErr(err)
+	recorder := httptest.NewRecorder()
+	api.HandleBlackList(recorder, blacklistReq)
+	is.Equal(recorder.Result().StatusCode, http.StatusNoContent)
+	is.Equal(len(storeStub.blacklist), 1)
+
+	//remove from blacklist
+	unblacklistReq, err := http.NewRequest(
+		"DELETE",
+		testServer.URL+"/blacklist/",
+		bytes.NewBuffer(serializedBody),
+	)
+	is.NoErr(err)
+	recorder = httptest.NewRecorder()
+	api.HandleBlackList(recorder, unblacklistReq)
+	is.Equal(recorder.Result().StatusCode, http.StatusNoContent)
+	is.Equal(len(storeStub.blacklist), 0)
+}
+
 func setupTestServer() *httptest.Server {
 	vastData, _ := os.ReadFile("../test_data/testVast.xml")
 	vmapData, _ := os.ReadFile("../test_data/testVmap.xml")
+	emptyVmapData, _ := os.ReadFile("../test_data/emptyVmap.xml")
 	return httptest.NewServer(http.HandlerFunc(
 		func(res http.ResponseWriter, req *http.Request) {
 			switch req.URL.Query().Get("requestType") {
@@ -320,7 +527,11 @@ func setupTestServer() *httptest.Server {
 				time.Sleep(time.Millisecond * 10)
 				res.Header().Set("Content-Type", "application/xml")
 				res.WriteHeader(200)
-				_, _ = res.Write(vmapData)
+				if req.URL.Query().Get("empty") == "true" {
+					_, _ = res.Write(emptyVmapData)
+				} else {
+					_, _ = res.Write(vmapData)
+				}
 			default:
 				res.WriteHeader(404)
 			}

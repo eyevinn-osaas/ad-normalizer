@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const fillerId = "NORMALIZER_FILLER"
+
 func GetBestMediaFileFromVastAd(ad *vmap.Ad) *vmap.MediaFile {
 	bestMediaFile := &vmap.MediaFile{}
 	for _, c := range ad.InLine.Creatives {
@@ -41,6 +43,32 @@ func GetCreatives(
 	return creatives
 }
 
+func CreateFillerAd(fillerUrl string, sequenceNum int) vmap.Ad {
+	return vmap.Ad{
+		Id:       fillerId,
+		Sequence: sequenceNum,
+		InLine: &vmap.InLine{
+			Creatives: []vmap.Creative{
+				{
+					Id: fillerId,
+					UniversalAdId: &vmap.UniversalAdId{
+						IdRegistry: "eyevinn/ad-normalizer",
+						Id:         fillerId,
+					},
+					Linear: &vmap.Linear{
+						MediaFiles: []vmap.MediaFile{
+							{
+								Bitrate: 1, // Needs to be bigger than zero value for int
+								Text:    fillerUrl,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func getKey(keyField, keyRegex string, ad *vmap.Ad, mediaFile *vmap.MediaFile) string {
 	var res string
 	switch keyField {
@@ -54,6 +82,24 @@ func getKey(keyField, keyRegex string, ad *vmap.Ad, mediaFile *vmap.MediaFile) s
 		res = re.ReplaceAllString(ad.InLine.Creatives[0].UniversalAdId.Id, "")
 	}
 	return res
+}
+
+func UrlToKey(urlStr, keyRegex string) string {
+	re := regexp.MustCompile(keyRegex)
+	return re.ReplaceAllString(urlStr, "")
+}
+
+func ValidPath(path string) bool {
+	if path == "" {
+		return false
+	}
+	if path == "/" {
+		return false
+	}
+	if path == "." {
+		return false
+	}
+	return true
 }
 
 func ConvertToAssetDescriptionSlice(vast *vmap.VAST) []structure.AssetDescription {

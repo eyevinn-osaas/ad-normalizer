@@ -97,3 +97,23 @@ func TestQueuePackagingJob(t *testing.T) {
 	err = store.EnqueuePackagingJob("test-queue", packagingJob)
 	is.NoErr(err)
 }
+
+func TestBlackList(t *testing.T) {
+	is := is.New(t)
+	store, err := NewValkeyStore("redis://" + redisAdress)
+	is.NoErr(err)
+
+	err = store.BlackList("test-key")
+	is.NoErr(err)
+
+	inBlackList, err := store.InBlackList("test-key")
+	is.NoErr(err)
+	is.True(inBlackList)
+
+	err = store.RemoveFromBlackList("test-key")
+	is.NoErr(err)
+	inBlackList, err = store.InBlackList("test-key")
+	is.NoErr(err)
+	is.True(!inBlackList) // Should not be in blacklist anymore
+
+}
