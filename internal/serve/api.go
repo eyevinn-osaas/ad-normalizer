@@ -28,6 +28,7 @@ import (
 const userAgentHeader = "X-Device-User-Agent"
 const forwardedForHeader = "X-Forwarded-For"
 const jobPath = "/jobs"
+const blacklistPath = "/blacklist"
 
 type API struct {
 	valkeyStore    store.Store
@@ -97,7 +98,6 @@ func (api *API) HandleJobList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// TODO: Add logic for next page and prev page
 	var prev, next string
 	if page > 0 {
 		prev = jobPath + "?page=" + strconv.Itoa(page-1) + "&size=" + strconv.Itoa(size)
@@ -137,26 +137,43 @@ type blacklistRequest struct {
 	MediaUrl string `json:"mediaUrl"`
 }
 
-func (api *API) HandleBlackList(w http.ResponseWriter, r *http.Request) {
-	_, span := otel.Tracer("api").Start(r.Context(), "HandleBlackList")
-	defer span.End()
-	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+type blacklistResponse struct {
+	MediaUrls  []string `json:"mediaUrls"`
+	Page       int      `json:"page"`
+	Size       int      `json:"size"`
+	Next       string   `json:"next,omitempty"`
+	Prev       string   `json:"prev,omitempty"`
+	TotalCount int64    `json:"totalCount"`
+}
+
+func readBlacklistRequest(r *http.Request) (blacklistRequest, error) {
 	bytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		logger.Error("failed to read request body", slog.String("error", err.Error()))
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		return
+		return blacklistRequest{}, err
 	}
 	var blRequest blacklistRequest
 	if err := json.Unmarshal(bytes, &blRequest); err != nil {
-		logger.Error("failed to unmarshal request body", slog.String("error", err.Error()))
-		http.Error(w, "Failed to unmarshal request body", http.StatusBadRequest)
+		return blRequest, err
+	}
+
+	return blRequest, nil
+}
+
+func (api *API) HandleBlackList(w http.ResponseWriter, r *http.Request) {
+	_, span := otel.Tracer("api").Start(r.Context(), "HandleBlackList")
+	defer span.End()
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete && r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if r.Method == http.MethodPost {
+	switch r.Method {
+	case http.MethodPost:
+		blRequest, err := readBlacklistRequest(r)
+		if err != nil {
+			logger.Error("failed to read blacklist request", slog.String("error", err.Error()))
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
 		err = api.valkeyStore.BlackList(blRequest.MediaUrl)
 		if err != nil {
 			logger.Error("failed to blacklist media URL",
@@ -168,8 +185,14 @@ func (api *API) HandleBlackList(w http.ResponseWriter, r *http.Request) {
 		}
 		logger.Info("blacklisted media URL", slog.String("mediaUrl", blRequest.MediaUrl))
 		w.WriteHeader(http.StatusNoContent)
-	}
-	if r.Method == http.MethodDelete {
+
+	case http.MethodDelete:
+		blRequest, err := readBlacklistRequest(r)
+		if err != nil {
+			logger.Error("failed to read blacklist request", slog.String("error", err.Error()))
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
 		err = api.valkeyStore.RemoveFromBlackList(blRequest.MediaUrl)
 		if err != nil {
 			logger.Error("failed to unblacklist media URL",
@@ -181,6 +204,56 @@ func (api *API) HandleBlackList(w http.ResponseWriter, r *http.Request) {
 		}
 		logger.Info("unblacklisted media URL", slog.String("mediaUrl", blRequest.MediaUrl))
 		w.WriteHeader(http.StatusNoContent)
+	case http.MethodGet:
+		query := r.URL.Query()
+		page := 0
+		size := 10
+		if p := query.Get("page"); p != "" {
+			page, err := strconv.Atoi(p)
+			if err != nil || page < 0 {
+				http.Error(w, "Invalid page parameter", http.StatusBadRequest)
+				return
+			}
+		}
+		if s := query.Get("size"); s != "" {
+			size, err := strconv.Atoi(s)
+			if err != nil || size <= 0 || size > 100 {
+				http.Error(w, "Invalid size parameter", http.StatusBadRequest)
+				return
+			}
+		}
+		var prev, next string
+		if page > 0 {
+			prev = blacklistPath + "?page=" + strconv.Itoa(page-1) + "&size=" + strconv.Itoa(size)
+		}
+
+		results, cardinality, err := api.valkeyStore.GetBlackList(page, size)
+		if err != nil {
+			logger.Error("failed to list jobs", slog.String("error", err.Error()))
+			http.Error(w, "Failed to list jobs", http.StatusInternalServerError)
+			return
+		}
+
+		if len(results) == size {
+			next = blacklistPath + "?page=" + strconv.Itoa(page+1) + "&size=" + strconv.Itoa(size)
+		}
+		resp := blacklistResponse{
+			MediaUrls:  results,
+			Page:       page,
+			Size:       len(results),
+			Next:       next,
+			Prev:       prev,
+			TotalCount: cardinality,
+		}
+		ret, err := json.Marshal(resp)
+		if err != nil {
+			logger.Error("failed to marshal blacklist", slog.String("error", err.Error()))
+			http.Error(w, "Failed to marshal blacklist", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(ret)
 	}
 }
 
