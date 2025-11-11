@@ -12,6 +12,9 @@ import (
 
 func TestPackagingFailure(t *testing.T) {
 	is := is.New(t)
+
+	api, ts, storeStub, _ := setupApi()
+	defer ts.Close()
 	failureEvent := `{"message": {"jobId":"test-job-id","url":"http://encore-example.osaas.io/"}}`
 	req, err := http.NewRequest("POST", "/failure", bytes.NewBufferString(failureEvent))
 	is.NoErr(err)
@@ -30,6 +33,8 @@ func TestPackagingSuccess(t *testing.T) {
     	"url": "https://encore-instance",
     	"outputPath": "/output-folder/assetId/jobId/"
 	}`
+	api, ts, storeStub, _ := setupApi()
+	defer ts.Close()
 	req, err := http.NewRequest("POST", "/success", bytes.NewBufferString(successEvent))
 	is.NoErr(err)
 	rr := httptest.NewRecorder()
@@ -41,4 +46,5 @@ func TestPackagingSuccess(t *testing.T) {
 	is.True(ok)
 	is.Equal(tci.Status, "COMPLETED")
 	is.True(strings.HasSuffix(tci.Url, "index.m3u8"))
+	storeStub.reset()
 }
