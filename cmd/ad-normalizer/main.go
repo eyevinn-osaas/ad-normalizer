@@ -17,6 +17,7 @@ import (
 	"github.com/Eyevinn/ad-normalizer/internal/config"
 	"github.com/Eyevinn/ad-normalizer/internal/encore"
 	"github.com/Eyevinn/ad-normalizer/internal/logger"
+	"github.com/Eyevinn/ad-normalizer/internal/normalizerMetrics"
 	"github.com/Eyevinn/ad-normalizer/internal/osaas"
 	"github.com/Eyevinn/ad-normalizer/internal/serve"
 	"github.com/Eyevinn/ad-normalizer/internal/store"
@@ -42,10 +43,14 @@ func main() {
 	defer stop()
 
 	otelShutdown, err := telemetry.SetupOtelSdk(ctx, config)
-
 	if err != nil {
 		return
 	}
+
+	// Check if OTEL is enabled by testing if we have OTEL environment variables
+	otelEnabled := telemetry.IsOtelEnabled(config)
+	reportKpi, cancelKpi := setupKpiReporting(&config)
+	defer cancelKpi()
 
 	defer func() {
 		err = errors.Join(err, otelShutdown(context.Background()))
@@ -55,19 +60,20 @@ func main() {
 		logger.Error("Failed to read configuration", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
-	api, err := setupApi(&config)
+	api, err := setupApi(&config, reportKpi)
 
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/vmap", api.HandleVmap)
 	apiMux.HandleFunc("/vast", api.HandleVast)
 	apiMux.HandleFunc("/blacklist", api.HandleBlackList)
+	apiMux.HandleFunc("/jobs", api.HandleJobList)
 
 	packagerMux := http.NewServeMux()
 	packagerMux.HandleFunc("/success", api.HandlePackagingSuccess)
 	packagerMux.HandleFunc("/failure", api.HandlePackagingFailure)
 
-	apiMuxChain := setupMiddleWare(apiMux, "api")
-	packagerMuxChain := setupMiddleWare(packagerMux, "packager")
+	apiMuxChain := setupMiddleWare(apiMux, "api", otelEnabled)
+	packagerMuxChain := setupMiddleWare(packagerMux, "packager", otelEnabled)
 	mainmux := http.NewServeMux()
 
 	mainmux.HandleFunc("/encoreCallback", api.HandleEncoreCallback)
@@ -141,16 +147,40 @@ func recovery(next http.Handler) http.HandlerFunc {
 	}
 }
 
-func setupMiddleWare(mainHandler http.Handler, name string) http.Handler {
-	otelMiddleware := otelhttp.NewMiddleware(name, otelhttp.WithPropagators(otel.GetTextMapPropagator()))
+func setupMiddleWare(mainHandler http.Handler, name string, otelEnabled bool) http.Handler {
 	compressorMiddleware, err := gzhttp.NewWrapper(gzhttp.MinSize(2000), gzhttp.CompressionLevel(gzip.BestSpeed))
 	if err != nil {
 		panic(err)
 	}
-	return recovery(otelMiddleware(corsMiddleware(compressorMiddleware(mainHandler))))
+
+	handlerChain := recovery(corsMiddleware(compressorMiddleware(mainHandler)))
+
+	if otelEnabled {
+		otelMiddleware := otelhttp.NewMiddleware(name, otelhttp.WithPropagators(otel.GetTextMapPropagator()))
+		handlerChain = recovery(otelMiddleware(corsMiddleware(compressorMiddleware(mainHandler))))
+	}
+
+	return handlerChain
 }
 
-func setupApi(config *config.AdNormalizerConfig) (*serve.API, error) {
+func setupKpiReporting(config *config.AdNormalizerConfig) (func(normalizerMetrics.AdsHandledEventArguments), func()) {
+
+	cancelKpi := func() {}
+	reportKpi := func(args normalizerMetrics.AdsHandledEventArguments) {}
+	var kpiReporter normalizerMetrics.NormalizerKpiReporter
+	if config.KpiPostUrl != "" {
+		logger.Info("KPI reporting is enabled", slog.String("KPI_POST_URL", config.KpiPostUrl))
+		kpiReporter, cancelKpi = normalizerMetrics.NewNormalizerKpiCollector(time.Minute, config.KpiPostUrl)
+
+		reportKpi = kpiReporter.AdsHandled
+	}
+	return reportKpi, cancelKpi
+}
+
+func setupApi(
+	config *config.AdNormalizerConfig,
+	kpiReportFunc func(normalizerMetrics.AdsHandledEventArguments),
+) (*serve.API, error) {
 
 	valkeyStore, err := store.NewValkeyStore(config.ValkeyUrl)
 	var oscCtx *osaasclient.Context
@@ -176,6 +206,6 @@ func setupApi(config *config.AdNormalizerConfig) (*serve.API, error) {
 		return nil, err
 	}
 	logger.Debug("Valkey store created successfully")
-	api := serve.NewAPI(valkeyStore, *config, encoreHandler, client)
+	api := serve.NewAPI(valkeyStore, *config, encoreHandler, client, kpiReportFunc)
 	return api, nil
 }

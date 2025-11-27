@@ -50,6 +50,9 @@ func TestEncoreCallback(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+
+			api, ts, ss, _ := setupApi()
+			defer ts.Close()
 			reqBody, err := json.Marshal(c.progressUpdate)
 			is.NoErr(err)
 			req, err := http.NewRequest("POST", "/encore/callback", bytes.NewBuffer(reqBody))
@@ -57,10 +60,10 @@ func TestEncoreCallback(t *testing.T) {
 			rr := httptest.NewRecorder()
 			api.HandleEncoreCallback(rr, req)
 			is.Equal(rr.Code, http.StatusOK)
-			is.Equal(storeStub.sets, c.expectSets)
-			is.Equal(storeStub.deletes, c.expectDeletes)
-			is.Equal(storeStub.gets, c.expectGets)
-			storeStub.reset()
+			is.Equal(ss.sets, c.expectSets)
+			is.Equal(ss.deletes, c.expectDeletes)
+			is.Equal(ss.gets, c.expectGets)
+			ss.reset()
 		})
 	}
 }

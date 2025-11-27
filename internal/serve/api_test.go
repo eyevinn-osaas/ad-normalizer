@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/Eyevinn/VMAP/vmap"
 	"github.com/Eyevinn/ad-normalizer/internal/config"
 	"github.com/Eyevinn/ad-normalizer/internal/logger"
+	"github.com/Eyevinn/ad-normalizer/internal/normalizerMetrics"
 	"github.com/Eyevinn/ad-normalizer/internal/structure"
 	"github.com/google/uuid"
 	"github.com/matryer/is"
@@ -28,6 +30,13 @@ type StoreStub struct {
 	gets      int
 	deletes   int
 	blacklist []string
+	kpis      normalizerMetrics.NormalizerMetrics
+}
+
+func (s *StoreStub) kpiReport(args normalizerMetrics.AdsHandledEventArguments) {
+	s.kpis.BrokenAds += args.BrokenAds
+	s.kpis.IngestedAds += args.IngestedAds
+	s.kpis.ServedAds += args.ServedAds
 }
 
 // Delete implements store.Store.
@@ -51,11 +60,28 @@ func (s *StoreStub) Set(key string, value structure.TranscodeInfo, ttl ...int64)
 	return nil
 }
 
+func (s *StoreStub) List(page int, size int) ([]structure.TranscodeInfo, int64, error) {
+	result := make([]structure.TranscodeInfo, 0, size)
+	for i := range size {
+		strVal := strconv.Itoa((page * size) + (size - 1 - i))
+		tci := structure.TranscodeInfo{
+			Url:        "http://example.com/video" + strVal + "/index.m3u8",
+			Status:     "COMPLETED",
+			Source:     "s3://fake-bucket/video" + strVal + ".mp4",
+			LastUpdate: time.Now().Unix(),
+		}
+		result = append(result, tci)
+	}
+	return result, int64(size), nil
+}
+
 func (s *StoreStub) reset() {
 	s.mockStore = make(map[string]structure.TranscodeInfo)
 	s.sets = 0
 	s.gets = 0
 	s.deletes = 0
+	s.kpis = normalizerMetrics.NormalizerMetrics{}
+	s.blacklist = []string{} // Reset the blacklist
 }
 
 func (s *StoreStub) BlackList(key string) error {
@@ -80,6 +106,10 @@ func (s *StoreStub) RemoveFromBlackList(key string) error {
 		}
 	}
 	return nil // Key not found in blacklist, nothing to remove
+}
+
+func (s *StoreStub) GetBlackList(page int, size int) ([]string, int64, error) {
+	return s.blacklist, int64(len(s.blacklist)), nil
 }
 
 func (s *StoreStub) EnqueuePackagingJob(queueName string, message structure.PackagingQueueMessage) error {
@@ -112,6 +142,11 @@ func (e *EncoreHandlerStub) GetEncoreJob(jobId string) (structure.EncoreJob, err
 				},
 			},
 		},
+		Inputs: []structure.EncoreInput{
+			{
+				Uri: "http://example.com/source/video.mp4",
+			},
+		},
 	}, nil
 }
 
@@ -127,19 +162,15 @@ func (e *EncoreHandlerStub) CreateJob(creative *structure.ManifestAsset) (struct
 	return newJob, nil
 }
 
-var api *API
-var testServer *httptest.Server
-var encoreHandler *EncoreHandlerStub
-var storeStub *StoreStub
-
-func TestMain(m *testing.M) {
-	storeStub = &StoreStub{
+func setupApi() (*API, *httptest.Server, *StoreStub, *EncoreHandlerStub) {
+	storeStub := &StoreStub{
 		mockStore: make(map[string]structure.TranscodeInfo),
+		kpis:      normalizerMetrics.NormalizerMetrics{},
 	}
 
-	testServer = setupTestServer()
-	defer testServer.Close()
-	encoreHandler = &EncoreHandlerStub{}
+	testServer := setupTestServer()
+
+	encoreHandler := &EncoreHandlerStub{}
 	adserverUrl, _ := url.Parse(testServer.URL)
 	assetServerUrl, _ := url.Parse("https://asset-server.example.com")
 	apiConf := config.AdNormalizerConfig{
@@ -147,24 +178,23 @@ func TestMain(m *testing.M) {
 		AssetServerUrl: *assetServerUrl,
 		KeyField:       "url",
 		KeyRegex:       "[^a-zA-Z0-9]",
+		KpiPostUrl:     "http://kpi-post.example.com/metrics",
 	}
 	// Initialize the API with the mock store
-	api = NewAPI(
+	api := NewAPI(
 		storeStub,
 		apiConf,
 		encoreHandler,
 		&http.Client{}, // Use nil for the client in tests, or you can create a mock client
+		storeStub.kpiReport,
 	)
-
-	// Run the tests
-	exitCode := m.Run()
-
-	// Clean up if necessary
-	os.Exit(exitCode)
+	return api, testServer, storeStub, encoreHandler
 }
 
 func TestReplaceVast(t *testing.T) {
 	is := is.New(t)
+	api, ts, storeStub, encoreHandler := setupApi()
+	defer ts.Close()
 	// Populate the store with one ad
 	re := regexp.MustCompile("[^a-zA-Z0-9]")
 	adKey := re.ReplaceAllString("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4", "")
@@ -177,7 +207,7 @@ func TestReplaceVast(t *testing.T) {
 	_ = storeStub.Set(adKey, transcodeInfo)
 	vastReq, err := http.NewRequest(
 		"GET",
-		testServer.URL,
+		ts.URL,
 		nil,
 	)
 	is.NoErr(err)
@@ -187,7 +217,7 @@ func TestReplaceVast(t *testing.T) {
 	vastReq.Header.Set("accept", "application/xml")
 	// make sure we request a VAST response
 	qps := vastReq.URL.Query()
-	newUrl := strings.Replace(testServer.URL, "127", "128", 1)
+	newUrl := strings.Replace(ts.URL, "127", "128", 1)
 	parsedUrl, err := url.Parse(newUrl)
 	is.NoErr(err)
 	api.adServerUrl = *parsedUrl
@@ -211,8 +241,12 @@ func TestReplaceVast(t *testing.T) {
 	is.Equal(mediaFile.Width, 718)
 	is.Equal(mediaFile.Height, 404)
 
-	realUrl, _ := url.Parse(testServer.URL)
+	realUrl, _ := url.Parse(ts.URL)
 	api.adServerUrl = *realUrl // Reset to original URL
+
+	is.Equal(storeStub.kpis.BrokenAds, 0)
+	is.Equal(storeStub.kpis.IngestedAds, 1)
+	is.Equal(storeStub.kpis.ServedAds, 1)
 
 	encoreHandler.reset()
 	storeStub.reset()
@@ -220,6 +254,8 @@ func TestReplaceVast(t *testing.T) {
 
 func TestReplaceVastWithBlacklisted(t *testing.T) {
 	is := is.New(t)
+	api, ts, storeStub, encoreHandler := setupApi()
+	defer ts.Close()
 	// Populate the store with one ad
 	re := regexp.MustCompile("[^a-zA-Z0-9]")
 	adKey := re.ReplaceAllString("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4", "")
@@ -232,7 +268,7 @@ func TestReplaceVastWithBlacklisted(t *testing.T) {
 	_ = storeStub.Set(adKey, transcodeInfo)
 	vastReq, err := http.NewRequest(
 		"GET",
-		testServer.URL,
+		ts.URL,
 		nil,
 	)
 	is.NoErr(err)
@@ -258,14 +294,21 @@ func TestReplaceVastWithBlacklisted(t *testing.T) {
 	is.NoErr(err)
 	is.Equal(len(vastRes.Ad), 0) // since the ad is blacklisted, we should not get any ads back
 
+	is.Equal(storeStub.kpis.BrokenAds, 1)
+	is.Equal(storeStub.kpis.IngestedAds, 1)
+	is.Equal(storeStub.kpis.ServedAds, 0)
+
 	encoreHandler.reset()
 	storeStub.reset()
-	storeStub.blacklist = []string{} // Reset the blacklist
+
 }
 
 func TestReplaceVastWithFiller(t *testing.T) {
 	is := is.New(t)
 	re := regexp.MustCompile("[^a-zA-Z0-9]")
+
+	api, ts, storeStub, encoreHandler := setupApi()
+	defer ts.Close()
 	adKey := re.ReplaceAllString("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4", "")
 	transcodeInfo := structure.TranscodeInfo{
 		Url:         "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8",
@@ -286,7 +329,7 @@ func TestReplaceVastWithFiller(t *testing.T) {
 
 	vastReq, err := http.NewRequest(
 		"GET",
-		testServer.URL,
+		ts.URL,
 		nil,
 	)
 	is.NoErr(err)
@@ -318,6 +361,10 @@ func TestReplaceVastWithFiller(t *testing.T) {
 	filler := vastRes.Ad[1]
 	is.Equal(filler.Id, "NORMALIZER_FILLER")
 
+	is.Equal(storeStub.kpis.BrokenAds, 0)
+	is.Equal(storeStub.kpis.IngestedAds, 1)
+	is.Equal(storeStub.kpis.ServedAds, 2)
+
 	encoreHandler.reset()
 	storeStub.reset()
 }
@@ -326,6 +373,8 @@ func TestGetAssetList(t *testing.T) {
 	is := is.New(t)
 	// Populate the store with one ad
 	re := regexp.MustCompile("[^a-zA-Z0-9]")
+	api, ts, storeStub, encoreHandler := setupApi()
+	defer ts.Close()
 	adKey := re.ReplaceAllString("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4", "")
 	transcodeInfo := structure.TranscodeInfo{
 		Url:         "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8",
@@ -336,7 +385,7 @@ func TestGetAssetList(t *testing.T) {
 	_ = storeStub.Set(adKey, transcodeInfo)
 	vastReq, err := http.NewRequest(
 		"GET",
-		testServer.URL,
+		ts.URL,
 		nil,
 	)
 	is.NoErr(err)
@@ -369,9 +418,11 @@ func TestGetAssetList(t *testing.T) {
 
 func TestEmptyVmap(t *testing.T) {
 	is := is.New(t)
+	api, ts, storeStub, encoreHandler := setupApi()
+	defer ts.Close()
 	vmapReq, err := http.NewRequest(
 		"GET",
-		testServer.URL+"/vmap",
+		ts.URL+"/vmap",
 		nil,
 	)
 	is.NoErr(err)
@@ -411,6 +462,8 @@ func TestReplaceVmap(t *testing.T) {
 	}()
 	is.NoErr(err)
 
+	api, ts, storeStub, encoreHandler := setupApi()
+	defer ts.Close()
 	// Populate the store with one ad
 	re := regexp.MustCompile("[^a-zA-Z0-9]")
 	adKey := re.ReplaceAllString("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4", "")
@@ -423,7 +476,7 @@ func TestReplaceVmap(t *testing.T) {
 	_ = storeStub.Set(adKey, transcodeInfo)
 	vmapReq, err := http.NewRequest(
 		"GET",
-		testServer.URL+"/vmap",
+		ts.URL+"/vmap",
 		nil,
 	)
 	is.NoErr(err)
@@ -465,12 +518,19 @@ func TestReplaceVmap(t *testing.T) {
 	is.Equal(mediaFile.Text, "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8")
 	is.Equal(mediaFile.Width, 718)
 	is.Equal(mediaFile.Height, 404)
+
+	is.Equal(storeStub.kpis.BrokenAds, 0)
+	is.Equal(storeStub.kpis.IngestedAds, 1)
+	is.Equal(storeStub.kpis.ServedAds, 1)
+
 	encoreHandler.reset()
 	storeStub.reset()
 }
 
 func TestBlacklist(t *testing.T) {
 	is := is.New(t)
+	api, ts, storeStub, _ := setupApi()
+	defer ts.Close()
 	blacklistUrl := "https://adserver-assets.io/badfile.mp4"
 	reqBody := blacklistRequest{
 		MediaUrl: blacklistUrl,
@@ -479,7 +539,7 @@ func TestBlacklist(t *testing.T) {
 	is.NoErr(err)
 	blacklistReq, err := http.NewRequest(
 		"POST",
-		testServer.URL+"/blacklist/",
+		ts.URL+"/blacklist/",
 		bytes.NewBuffer(serializedBody),
 	)
 	is.NoErr(err)
@@ -488,10 +548,35 @@ func TestBlacklist(t *testing.T) {
 	is.Equal(recorder.Result().StatusCode, http.StatusNoContent)
 	is.Equal(len(storeStub.blacklist), 1)
 
+	getBlacklistReq, err := http.NewRequest(
+		"GET",
+		ts.URL+"/blacklist/",
+		nil,
+	)
+	is.NoErr(err)
+	recorder = httptest.NewRecorder()
+	api.HandleBlackList(recorder, getBlacklistReq)
+	is.Equal(recorder.Result().StatusCode, http.StatusOK)
+	is.Equal(recorder.Result().Header.Get("Content-Type"), "application/json")
+	defer recorder.Result().Body.Close()
+
+	responseBody, err := io.ReadAll(recorder.Result().Body)
+	is.NoErr(err)
+	var blResponse blacklistResponse
+	err = json.Unmarshal(responseBody, &blResponse)
+	is.NoErr(err)
+	is.Equal(len(blResponse.MediaUrls), 1)
+	is.Equal(blResponse.MediaUrls[0], blacklistUrl)
+	is.Equal(blResponse.Page, 0)
+	is.Equal(blResponse.Size, 1)
+	is.Equal(blResponse.TotalCount, int64(1))
+	is.Equal(blResponse.Next, "")
+	is.Equal(blResponse.Prev, "")
+
 	//remove from blacklist
 	unblacklistReq, err := http.NewRequest(
 		"DELETE",
-		testServer.URL+"/blacklist/",
+		ts.URL+"/blacklist/",
 		bytes.NewBuffer(serializedBody),
 	)
 	is.NoErr(err)
@@ -499,6 +584,119 @@ func TestBlacklist(t *testing.T) {
 	api.HandleBlackList(recorder, unblacklistReq)
 	is.Equal(recorder.Result().StatusCode, http.StatusNoContent)
 	is.Equal(len(storeStub.blacklist), 0)
+}
+
+// TODO: Add test for status endpoint
+
+func TestHandleJobList(t *testing.T) {
+	is := is.New(t)
+	api, ts, _, _ := setupApi()
+	defer ts.Close()
+	// Create test request
+	req, err := http.NewRequest(http.MethodGet, "/status", nil)
+	is.NoErr(err)
+
+	// Create response recorder
+	recorder := httptest.NewRecorder()
+
+	// Call the handler
+	api.HandleJobList(recorder, req)
+
+	// Check the response
+	is.Equal(recorder.Result().StatusCode, http.StatusOK)
+	is.Equal(recorder.Result().Header.Get("Content-Type"), "application/json")
+
+	// Parse the response body
+	var response statusResponse
+	err = json.NewDecoder(recorder.Body).Decode(&response)
+	is.NoErr(err)
+
+	// Verify response contents
+	is.Equal(response.Page, 0)
+	is.Equal(len(response.Jobs), 10)
+	is.Equal(response.Next, "/jobs?page=1&size=10")
+	is.Equal(response.Prev, "")
+	for i, job := range response.Jobs {
+		expectedIndex := 9 - i // Since jobs are in descending order
+		expectedUrl := "http://example.com/video" + strconv.Itoa(expectedIndex) + "/index.m3u8"
+		expectedSource := "s3://fake-bucket/video" + strconv.Itoa(expectedIndex) + ".mp4"
+		is.Equal(job.Url, expectedUrl)
+		is.Equal(job.Status, "COMPLETED")
+		is.Equal(job.Source, expectedSource)
+		is.True(job.LastUpdate > 0)
+	}
+}
+
+func TestHandleJobListInvalidPageParameter(t *testing.T) {
+	is := is.New(t)
+	api, ts, _, _ := setupApi()
+	defer ts.Close()
+	// Test with invalid page parameter
+	req, err := http.NewRequest(http.MethodGet, "/status?page=invalid", nil)
+	is.NoErr(err)
+
+	recorder := httptest.NewRecorder()
+	api.HandleJobList(recorder, req)
+
+	is.Equal(recorder.Result().StatusCode, http.StatusBadRequest)
+
+	body, err := io.ReadAll(recorder.Body)
+	is.NoErr(err)
+	is.True(strings.Contains(string(body), "Invalid page parameter"))
+}
+
+func TestHandleJobListInvalidSizeParameter(t *testing.T) {
+	is := is.New(t)
+	api, ts, _, _ := setupApi()
+	defer ts.Close()
+	// Test with invalid size parameter
+	req, err := http.NewRequest(http.MethodGet, "/status?size=invalid", nil)
+	is.NoErr(err)
+
+	recorder := httptest.NewRecorder()
+	api.HandleJobList(recorder, req)
+
+	is.Equal(recorder.Result().StatusCode, http.StatusBadRequest)
+
+	body, err := io.ReadAll(recorder.Body)
+	is.NoErr(err)
+	is.True(strings.Contains(string(body), "Invalid size parameter"))
+}
+
+func TestHandleJobListNegativePageParameter(t *testing.T) {
+	is := is.New(t)
+	api, ts, _, _ := setupApi()
+	defer ts.Close()
+	// Test with negative page parameter
+	req, err := http.NewRequest(http.MethodGet, "/status?page=-1", nil)
+	is.NoErr(err)
+
+	recorder := httptest.NewRecorder()
+	api.HandleJobList(recorder, req)
+
+	is.Equal(recorder.Result().StatusCode, http.StatusBadRequest)
+
+	body, err := io.ReadAll(recorder.Body)
+	is.NoErr(err)
+	is.True(strings.Contains(string(body), "Invalid page parameter"))
+}
+
+func TestHandleJobListInvalidSizeParameterZero(t *testing.T) {
+	is := is.New(t)
+	api, ts, _, _ := setupApi()
+	defer ts.Close()
+	// Test with size parameter as zero
+	req, err := http.NewRequest(http.MethodGet, "/status?size=0", nil)
+	is.NoErr(err)
+
+	recorder := httptest.NewRecorder()
+	api.HandleJobList(recorder, req)
+
+	is.Equal(recorder.Result().StatusCode, http.StatusBadRequest)
+
+	body, err := io.ReadAll(recorder.Body)
+	is.NoErr(err)
+	is.True(strings.Contains(string(body), "Invalid size parameter"))
 }
 
 func setupTestServer() *httptest.Server {
