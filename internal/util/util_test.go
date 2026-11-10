@@ -10,6 +10,14 @@ import (
 	"github.com/matryer/is"
 )
 
+func TestCreativeIdTooLong(t *testing.T) {
+	is := is.New(t)
+	// 255 - len("_x264_1080_25.mp4") == 237, so this is exactly at the limit
+	atLimit := strings.Repeat("a", 255-len(EncoreOutputSuffix))
+	is.True(!CreativeIdTooLong(atLimit))
+	is.True(CreativeIdTooLong(atLimit + "a"))
+}
+
 func TestGetBestMediaFileFromVastAd(t *testing.T) {
 	is := is.New(t)
 	ad := defaultAd()
@@ -35,7 +43,7 @@ func TestGetCreatives(t *testing.T) {
 		{
 			key:         "url",
 			regex:       "[^a-zA-Z0-9]",
-			expectedKey: "httpexamplecomvideo2mp4",
+			expectedKey: HashCreativeUrl("http://example.com/video2.mp4"),
 		},
 	}
 	for _, c := range cases {
@@ -87,7 +95,7 @@ func TestReplaceMediaFiles(t *testing.T) {
 		CreativeId:        "httpexamplecomvideo2mp4",
 		MasterPlaylistUrl: "http://example.com/video2/index.m3u8",
 	}
-	err := ReplaceMediaFiles(vast, assets, "[^a-zA-Z0-9]", "url")
+	err := ReplaceMediaFiles(vast, assets, "[^a-zA-Z0-9]", "url", structure.ManifestFormatHLS)
 	is.NoErr(err)
 	is.Equal(len(assets), 1)
 }

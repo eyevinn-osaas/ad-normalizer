@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.24.12-alpine AS base
+FROM --platform=$BUILDPLATFORM golang:1.27.0-alpine AS base
 
 RUN adduser \
     --disabled-password \
@@ -9,10 +9,10 @@ RUN adduser \
     --uid 65532 \
     small-user
 
+RUN apk upgrade --no-cache
 RUN apk add --no-cache tzdata
 ## Needed if downstream users want to export metrics to f.ex. cloudwatch
-RUN apk update 
-RUN apk add curl tar procps-ng
+RUN apk add --no-cache curl tar procps-ng
 
 WORKDIR $GOPATH/src/smallest-golang/app/
 

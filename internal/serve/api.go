@@ -4,7 +4,6 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"io"
 	"log/slog"
@@ -28,21 +27,26 @@ import (
 
 const userAgentHeader = "X-Device-User-Agent"
 const forwardedForHeader = "X-Forwarded-For"
+const preferHeader = "Prefer"
+const preferenceAppliedHeader = "Preference-Applied"
+const manifestFormatPreference = "manifest-format"
 const jobPath = "/jobs"
 const blacklistPath = "/blacklist"
 
 type API struct {
-	valkeyStore    store.Store
-	adServerUrl    url.URL
-	assetServerUrl url.URL
-	keyField       string
-	keyRegex       string
-	encoreHandler  encore.EncoreHandler
-	client         *http.Client
-	jitPackage     bool
-	packageQueue   string
-	encoreUrl      url.URL
-	reportKpi      func(normalizerMetrics.AdsHandledEventArguments)
+	valkeyStore      store.Store
+	adServerUrl      url.URL
+	assetServerUrl   url.URL
+	keyField         string
+	keyRegex         string
+	encoreHandler    encore.EncoreHandler
+	client           *http.Client
+	jitPackage       bool
+	packageQueue     string
+	encoreUrl        url.URL
+	inFlightTtl      int
+	reportKpi        func(normalizerMetrics.AdsHandledEventArguments)
+	checkAssetExists func(assetUrl string) bool
 }
 
 func NewAPI(
@@ -52,7 +56,7 @@ func NewAPI(
 	client *http.Client,
 	kpiReportFunc func(normalizerMetrics.AdsHandledEventArguments),
 ) *API {
-	return &API{
+	api := &API{
 		valkeyStore:    valkeyStore,
 		adServerUrl:    config.AdServerUrl,
 		assetServerUrl: config.AssetServerUrl,
@@ -63,8 +67,11 @@ func NewAPI(
 		jitPackage:     config.JitPackage,
 		packageQueue:   config.PackagingQueueName,
 		encoreUrl:      config.EncoreUrl,
+		inFlightTtl:    config.InFlightTtl,
 		reportKpi:      kpiReportFunc,
 	}
+	api.checkAssetExists = api.assetExists
+	return api
 }
 
 type statusResponse struct {
@@ -264,6 +271,7 @@ func (api *API) HandleBlackList(w http.ResponseWriter, r *http.Request) {
 func (api *API) HandleVmap(w http.ResponseWriter, r *http.Request) {
 	ctx, span := otel.Tracer("api").Start(r.Context(), "HandleVmap")
 	vmapData := vmap.VMAP{}
+	manifestFormat, preferenceApplied := requestedManifestFormat(r)
 	logger.Debug("Handling VMAP request", slog.String("path", r.URL.Path))
 	byteResponse, subdomain, err := api.makeAdServerRequest(r, ctx)
 	if err != nil {
@@ -284,20 +292,20 @@ func (api *API) HandleVmap(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	vmapData, err = vmap.DecodeVmap(byteResponse)
+	vmapData, err = vmap.DecodeVmapScan(byteResponse)
 	span.AddEvent("Decoded VMAP data")
 	if err != nil {
 		logger.Error("failed to decode VMAP data", slog.String("error", err.Error()))
 		http.Error(w, "Failed to decode VMAP data", http.StatusInternalServerError)
 		return
 	}
-	if err := api.processVmap(&vmapData, subdomain); err != nil {
+	if err := api.processVmap(&vmapData, subdomain, manifestFormat); err != nil {
 		logger.Error("failed to process VMAP data", slog.String("error", err.Error()))
 		http.Error(w, "Failed to process VMAP data", http.StatusInternalServerError)
 		return
 	}
 	span.AddEvent("Processed VMAP data")
-	serializedVmap, err := xml.Marshal(vmapData)
+	serializedVmap, err := vmap.MarshalVmap(&vmapData)
 	if err != nil {
 		logger.Error("failed to marshal VMAP data", slog.String("error", err.Error()))
 		http.Error(w, "Failed to marshal VMAP data", http.StatusInternalServerError)
@@ -305,6 +313,7 @@ func (api *API) HandleVmap(w http.ResponseWriter, r *http.Request) {
 	}
 	span.AddEvent("Serialized VMAP data")
 	w.Header().Set("Content-Type", "application/xml")
+	setManifestPreferenceHeaders(w, manifestFormat, preferenceApplied)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(serializedVmap)
 	span.End()
@@ -317,13 +326,14 @@ func (api *API) HandleVast(w http.ResponseWriter, r *http.Request) {
 	logger.Debug("Handling VAST request", slog.String("path", r.URL.Path))
 	qp := r.URL.Query()
 	fillerUrl := qp.Get("filler")
+	manifestFormat, preferenceApplied := requestedManifestFormat(r)
 	responseBody, subdomain, err := api.makeAdServerRequest(r, ctx)
 	if err != nil {
 		logger.Error("failed to fetch VAST data", slog.String("error", err.Error()))
 		http.Error(w, "Failed to fetch VAST data", http.StatusInternalServerError)
 		return
 	}
-	vastData, err = vmap.DecodeVast(responseBody)
+	vastData, err = vmap.DecodeVastScan(responseBody)
 	span.AddEvent("Decoded VAST data")
 	if err != nil {
 		logger.Error("failed to decode VAST data",
@@ -340,7 +350,7 @@ func (api *API) HandleVast(w http.ResponseWriter, r *http.Request) {
 		)
 		vastData.Ad = append(vastData.Ad, util.CreateFillerAd(fillerUrl, len(vastData.Ad)+1))
 	}
-	api.findMissingAndDispatchJobs(&vastData, subdomain)
+	api.findMissingAndDispatchJobs(&vastData, subdomain, manifestFormat)
 	var serializedVast []byte
 	requestedContentType := r.Header.Get("Accept")
 	if requestedContentType == "application/json" {
@@ -356,7 +366,7 @@ func (api *API) HandleVast(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 	} else {
 		span.AddEvent("Processed VAST data")
-		serializedVast, err = xml.Marshal(vastData)
+		serializedVast, err = vmap.MarshalVast(&vastData)
 		span.AddEvent("Serialized VAST data")
 		if err != nil {
 			logger.Error("failed to marshal VAST data", slog.String("error", err.Error()))
@@ -365,6 +375,7 @@ func (api *API) HandleVast(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/xml")
 	}
+	setManifestPreferenceHeaders(w, manifestFormat, preferenceApplied)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(serializedVast)
 	span.End()
@@ -442,16 +453,17 @@ func (api *API) makeAdServerRequest(r *http.Request, ctx context.Context) ([]byt
 func (api *API) processVmap(
 	vmapData *vmap.VMAP,
 	subdomain string,
+	manifestFormat structure.ManifestFormat,
 ) error {
 	breakWg := &sync.WaitGroup{}
 	for _, adBreak := range vmapData.AdBreaks {
 		logger.Debug("Processing ad break", slog.String("breakId", adBreak.Id))
 		if adBreak.AdSource.VASTData.VAST != nil {
 			breakWg.Add(1)
-			go func(vastData *vmap.VAST, subdomain string) {
+			go func(vastData *vmap.VAST, subdomain string, manifestFormat structure.ManifestFormat) {
 				defer breakWg.Done()
-				api.findMissingAndDispatchJobs(vastData, subdomain)
-			}(adBreak.AdSource.VASTData.VAST, subdomain)
+				api.findMissingAndDispatchJobs(vastData, subdomain, manifestFormat)
+			}(adBreak.AdSource.VASTData.VAST, subdomain, manifestFormat)
 		}
 	}
 	breakWg.Wait()
@@ -475,12 +487,17 @@ func (api *API) dispatchJobs(missingCreatives map[string]structure.ManifestAsset
 				slog.String("creativeId", creative.CreativeId),
 				slog.String("jobId", encoreJob.Id),
 			)
-			_ = api.valkeyStore.Set(creative.CreativeId, structure.TranscodeInfo{
+			if err := api.valkeyStore.Set(creative.CreativeId, structure.TranscodeInfo{
 				Url:        creative.MasterPlaylistUrl,
 				Status:     "QUEUED",
 				Source:     creative.MasterPlaylistUrl,
 				LastUpdate: time.Now().Unix(),
-			})
+			}, int64(api.inFlightTtl)); err != nil {
+				logger.Error("failed to write QUEUED marker to cache",
+					slog.String("creativeId", creative.CreativeId),
+					slog.String("error", err.Error()),
+				)
+			}
 		}(&creative)
 	}
 }
@@ -488,10 +505,11 @@ func (api *API) dispatchJobs(missingCreatives map[string]structure.ManifestAsset
 func (api *API) findMissingAndDispatchJobs(
 	vast *vmap.VAST,
 	subdomain string,
+	manifestFormat structure.ManifestFormat,
 ) {
 	logger.Debug("Finding missing creatives in VAST", slog.Int("adCount", len(vast.Ad)))
 	creatives := util.GetCreatives(vast, api.keyField, api.keyRegex)
-	found, missing, filteredOut := api.partitionCreatives(creatives)
+	found, missing, filteredOut := api.partitionCreatives(creatives, manifestFormat)
 	logger.Debug("partitioned creatives", slog.Int("found", len(found)), slog.Int("missing", len(missing)))
 
 	api.dispatchJobs(missing)
@@ -509,6 +527,7 @@ func (api *API) findMissingAndDispatchJobs(
 		found,
 		api.keyRegex,
 		api.keyField,
+		manifestFormat,
 	)
 
 }
@@ -518,8 +537,8 @@ func (api *API) findMissingAndDispatchJobs(
 func (api *API) findMissingAndDispatchJobsJson(request *preIngestCreativeRequest) int {
 	logger.Debug("Finding missing creatives in pre-ingest request", slog.Int("mediaUrlCount", len(request.MediaUrls)))
 	// convert to ManifestAsset
-	creatives := util.MakeCreatives(request.MediaUrls, api.keyRegex)
-	found, missing, _ := api.partitionCreatives(creatives)
+	creatives := util.MakeCreatives(request.MediaUrls)
+	found, missing, _ := api.partitionCreatives(creatives, structure.ManifestFormatHLS)
 	logger.Debug("partitioned creatives", slog.Int("found", len(found)), slog.Int("missing", len(missing)))
 	api.dispatchJobs(missing)
 	return len(missing)
@@ -528,6 +547,7 @@ func (api *API) findMissingAndDispatchJobsJson(request *preIngestCreativeRequest
 // TODO: Return amt blacklisted as well
 func (api *API) partitionCreatives(
 	creatives map[string]structure.ManifestAsset,
+	manifestFormat structure.ManifestFormat,
 ) (map[string]structure.ManifestAsset, map[string]structure.ManifestAsset, int) {
 	found := make(map[string]structure.ManifestAsset, len(creatives))
 	missing := make(map[string]structure.ManifestAsset, len(creatives))
@@ -552,13 +572,49 @@ func (api *API) partitionCreatives(
 		}
 		if urlFound {
 			if transcodeInfo.Status == "COMPLETED" {
-				found[creative.CreativeId] = structure.ManifestAsset{
-					CreativeId:        creative.CreativeId,
-					MasterPlaylistUrl: transcodeInfo.Url,
-					Source:            transcodeInfo.Source,
+				if api.checkAssetExists(transcodeInfo.Url) {
+					found[creative.CreativeId] = structure.ManifestAsset{
+						CreativeId:        creative.CreativeId,
+						MasterPlaylistUrl: structure.ManifestUrlForFormat(transcodeInfo.Url, manifestFormat),
+						Source:            transcodeInfo.Source,
+					}
+				} else {
+					// Asset no longer exists at the cached URL — evict the key so the
+					// creative is re-transcoded on the next request.
+					if err := api.valkeyStore.Delete(creative.CreativeId); err != nil {
+						logger.Error("failed to delete stale cache entry",
+							slog.String("creativeId", creative.CreativeId),
+							slog.String("url", transcodeInfo.Url),
+							slog.String("error", err.Error()),
+						)
+					} else {
+						logger.Info("evicted stale cache entry (asset 404)",
+							slog.String("creativeId", creative.CreativeId),
+							slog.String("url", transcodeInfo.Url),
+						)
+					}
+					missing[creative.CreativeId] = structure.ManifestAsset{
+						CreativeId:        creative.CreativeId,
+						MasterPlaylistUrl: creative.MasterPlaylistUrl,
+						Source:            creative.MasterPlaylistUrl,
+					}
 				}
 			}
 		} else {
+			if util.CreativeIdTooLong(creative.CreativeId) {
+				logger.Warn("creative id too long to transcode, blacklisting media URL",
+					slog.String("creativeId", creative.CreativeId),
+					slog.String("masterPlaylistUrl", creative.MasterPlaylistUrl),
+				)
+				if err := api.valkeyStore.BlackList(creative.MasterPlaylistUrl); err != nil {
+					logger.Error("failed to blacklist media URL",
+						slog.String("error", err.Error()),
+						slog.String("masterPlaylistUrl", creative.MasterPlaylistUrl),
+					)
+				}
+				filteredOut++
+				continue
+			}
 			missing[creative.CreativeId] = structure.ManifestAsset{
 				CreativeId:        creative.CreativeId,
 				MasterPlaylistUrl: creative.MasterPlaylistUrl,
@@ -567,6 +623,31 @@ func (api *API) partitionCreatives(
 		}
 	}
 	return found, missing, filteredOut
+}
+
+// assetExists checks whether the master playlist URL still resolves to a live
+// asset. It issues a GET request and returns false only on a definitive 404.
+// Any other error (network failure, 5xx, timeout) is treated as "assume still
+// alive" so that a transient asset-server problem does not wipe the cache.
+func (api *API) assetExists(assetUrl string) bool {
+	resp, err := api.client.Get(assetUrl)
+	if err != nil {
+		logger.Warn("asset existence check failed (assuming alive)",
+			slog.String("url", assetUrl),
+			slog.String("error", err.Error()),
+		)
+		return true
+	}
+	defer resp.Body.Close()
+	// Drain body so the connection can be reused.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		logger.Warn("asset existence check returned 404",
+			slog.String("url", assetUrl),
+		)
+		return false
+	}
+	return true
 }
 
 type preIngestCreativeRequest struct {
@@ -590,10 +671,12 @@ func (api *API) HandlePreIngestCreatives(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
+	logger.Info("Received pre-ingest request", slog.Int("amount", len(piRequest.MediaUrls)))
 	amtMissing := api.findMissingAndDispatchJobsJson(&piRequest)
 	resp := preIngestCreativeResponse{
 		NotYetProcessed: amtMissing,
 	}
+	logger.Info("Dispatched transcoding jobs for pre-ingest request", slog.Int("amount", amtMissing))
 	ret, err := json.Marshal(resp)
 	if err != nil {
 		logger.Error("failed to marshal response", slog.String("error", err.Error()))
@@ -617,6 +700,54 @@ func readPreIngestRequest(r *http.Request) (preIngestCreativeRequest, error) {
 	}
 
 	return piRequest, nil
+}
+
+func requestedManifestFormat(r *http.Request) (structure.ManifestFormat, bool) {
+	for _, headerValue := range r.Header.Values(preferHeader) {
+		for _, preference := range strings.Split(headerValue, ",") {
+			key, value, found := strings.Cut(strings.TrimSpace(preference), "=")
+			if !found || !strings.EqualFold(strings.TrimSpace(key), manifestFormatPreference) {
+				continue
+			}
+			value = strings.TrimSpace(value)
+			value, _, _ = strings.Cut(value, ";")
+			value = strings.Trim(strings.TrimSpace(value), `"`)
+			switch strings.ToLower(value) {
+			case string(structure.ManifestFormatHLS), "application/vnd.apple.mpegurl", "application/x-mpegurl", "hls":
+				return structure.ManifestFormatHLS, true
+			case string(structure.ManifestFormatDASH), "dash+xml", "application/dash+xml", "mpd":
+				return structure.ManifestFormatDASH, true
+			}
+		}
+	}
+	return structure.ManifestFormatHLS, false
+}
+
+func setManifestPreferenceHeaders(
+	w http.ResponseWriter,
+	manifestFormat structure.ManifestFormat,
+	preferenceApplied bool,
+) {
+	if preferenceApplied {
+		w.Header().Set(
+			preferenceAppliedHeader,
+			manifestFormatPreference+"="+manifestFormat.PreferValue(),
+		)
+	}
+	addVaryHeader(w.Header(), preferHeader)
+}
+
+func addVaryHeader(header http.Header, value string) {
+	for _, currentValue := range strings.Split(header.Get("Vary"), ",") {
+		if strings.EqualFold(strings.TrimSpace(currentValue), value) {
+			return
+		}
+	}
+	if header.Get("Vary") == "" {
+		header.Set("Vary", value)
+		return
+	}
+	header.Set("Vary", header.Get("Vary")+", "+value)
 }
 
 func decompressGzip(body io.Reader) ([]byte, error) {

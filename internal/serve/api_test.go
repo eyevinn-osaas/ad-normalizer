@@ -4,14 +4,16 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,20 +22,25 @@ import (
 	"github.com/Eyevinn/ad-normalizer/internal/logger"
 	"github.com/Eyevinn/ad-normalizer/internal/normalizerMetrics"
 	"github.com/Eyevinn/ad-normalizer/internal/structure"
+	"github.com/Eyevinn/ad-normalizer/internal/util"
 	"github.com/google/uuid"
 	"github.com/matryer/is"
 )
 
 type StoreStub struct {
+	mu        sync.Mutex
 	mockStore map[string]structure.TranscodeInfo
 	sets      int
 	gets      int
 	deletes   int
 	blacklist []string
 	kpis      normalizerMetrics.NormalizerMetrics
+	lastTtls  map[string]int64 // keyed by cache key; -1 means no TTL was passed
 }
 
 func (s *StoreStub) kpiReport(args normalizerMetrics.AdsHandledEventArguments) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.kpis.BrokenAds += args.BrokenAds
 	s.kpis.IngestedAds += args.IngestedAds
 	s.kpis.ServedAds += args.ServedAds
@@ -41,12 +48,16 @@ func (s *StoreStub) kpiReport(args normalizerMetrics.AdsHandledEventArguments) {
 
 // Delete implements store.Store.
 func (s *StoreStub) Delete(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	delete(s.mockStore, key)
 	s.deletes++
 	return nil
 }
 
 func (s *StoreStub) Get(key string) (structure.TranscodeInfo, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.gets++
 	if value, exists := s.mockStore[key]; exists {
 		return value, true, nil
@@ -55,8 +66,18 @@ func (s *StoreStub) Get(key string) (structure.TranscodeInfo, bool, error) {
 }
 
 func (s *StoreStub) Set(key string, value structure.TranscodeInfo, ttl ...int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.sets++
 	s.mockStore[key] = value
+	if s.lastTtls == nil {
+		s.lastTtls = make(map[string]int64)
+	}
+	if len(ttl) > 0 {
+		s.lastTtls[key] = ttl[0]
+	} else {
+		s.lastTtls[key] = -1
+	}
 	return nil
 }
 
@@ -76,12 +97,15 @@ func (s *StoreStub) List(page int, size int) ([]structure.TranscodeInfo, int64, 
 }
 
 func (s *StoreStub) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.mockStore = make(map[string]structure.TranscodeInfo)
 	s.sets = 0
 	s.gets = 0
 	s.deletes = 0
 	s.kpis = normalizerMetrics.NormalizerMetrics{}
 	s.blacklist = []string{} // Reset the blacklist
+	s.lastTtls = make(map[string]int64)
 }
 
 func (s *StoreStub) BlackList(key string) error {
@@ -90,10 +114,8 @@ func (s *StoreStub) BlackList(key string) error {
 }
 
 func (s *StoreStub) InBlackList(key string) (bool, error) {
-	for _, blacklistedKey := range s.blacklist {
-		if blacklistedKey == key {
-			return true, nil
-		}
+	if slices.Contains(s.blacklist, key) {
+		return true, nil
 	}
 	return false, nil
 }
@@ -118,6 +140,7 @@ func (s *StoreStub) EnqueuePackagingJob(queueName string, message structure.Pack
 }
 
 type EncoreHandlerStub struct {
+	mu    sync.Mutex
 	calls int
 }
 
@@ -141,6 +164,15 @@ func (e *EncoreHandlerStub) GetEncoreJob(jobId string) (structure.EncoreJob, err
 					},
 				},
 			},
+			{
+				MediaType: "Audio",
+				AudioStreams: []structure.EncoreAudioStream{
+					{
+						Codec:    "AAC",
+						Channels: 2,
+					},
+				},
+			},
 		},
 		Inputs: []structure.EncoreInput{
 			{
@@ -152,14 +184,130 @@ func (e *EncoreHandlerStub) GetEncoreJob(jobId string) (structure.EncoreJob, err
 
 func (e *EncoreHandlerStub) reset() {
 	logger.Info("Resetting EncoreHandlerStub")
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.calls = 0
 }
 
 func (e *EncoreHandlerStub) CreateJob(creative *structure.ManifestAsset) (structure.EncoreJob, error) {
 	logger.Info("EncoreHandlerStub.createJob called")
 	newJob := structure.EncoreJob{}
-	e.calls += 1
+	e.mu.Lock()
+	e.calls++
+	e.mu.Unlock()
 	return newJob, nil
+}
+
+// EncoreHandlerFailStub always returns an error from CreateJob.
+type EncoreHandlerFailStub struct{}
+
+func (e *EncoreHandlerFailStub) GetEncoreJob(jobId string) (structure.EncoreJob, error) {
+	return structure.EncoreJob{}, nil
+}
+
+func (e *EncoreHandlerFailStub) CreateJob(creative *structure.ManifestAsset) (structure.EncoreJob, error) {
+	return structure.EncoreJob{}, errors.New("encore submission rejected: 503 Service Unavailable")
+}
+
+// EncoreHandlerGetJobErrorStub returns an error from GetEncoreJob (e.g. auth/SAT failure).
+type EncoreHandlerGetJobErrorStub struct {
+	err error
+}
+
+func (e *EncoreHandlerGetJobErrorStub) GetEncoreJob(jobId string) (structure.EncoreJob, error) {
+	return structure.EncoreJob{}, e.err
+}
+
+func (e *EncoreHandlerGetJobErrorStub) CreateJob(creative *structure.ManifestAsset) (structure.EncoreJob, error) {
+	return structure.EncoreJob{}, nil
+}
+
+// TestDispatchJobsDoesNotWriteQueuedMarkerOnSubmitError verifies that when
+// Encore submission fails the QUEUED marker is NOT written to the cache.
+// Before the fix CreateJob swallowed the error, so the marker was always written.
+func TestDispatchJobsDoesNotWriteQueuedMarkerOnSubmitError(t *testing.T) {
+	is := is.New(t)
+
+	storeStub := &StoreStub{
+		mockStore: make(map[string]structure.TranscodeInfo),
+		lastTtls:  make(map[string]int64),
+		kpis:      normalizerMetrics.NormalizerMetrics{},
+	}
+	adserverUrl, _ := url.Parse("http://localhost:9999") // unused in this test
+	assetServerUrl, _ := url.Parse("https://asset-server.example.com")
+	apiConf := config.AdNormalizerConfig{
+		AdServerUrl:    *adserverUrl,
+		AssetServerUrl: *assetServerUrl,
+		KeyField:       "url",
+		KeyRegex:       "[^a-zA-Z0-9]",
+		InFlightTtl:    3600,
+	}
+	api := NewAPI(
+		storeStub,
+		apiConf,
+		&EncoreHandlerFailStub{},
+		&http.Client{},
+		storeStub.kpiReport,
+	)
+
+	creative := structure.ManifestAsset{
+		CreativeId:        "fail-creative-id",
+		MasterPlaylistUrl: "http://example.com/ad.mp4",
+	}
+	api.dispatchJobs(map[string]structure.ManifestAsset{creative.CreativeId: creative})
+
+	// Give the goroutines a moment to complete.
+	time.Sleep(100 * time.Millisecond)
+
+	// No marker should have been written because submission failed.
+	is.Equal(storeStub.sets, 0)
+}
+
+// TestDispatchJobsWritesQueuedMarkerWithTtl verifies that on a successful
+// submission the QUEUED marker is stored with the configured IN_FLIGHT_TTL so
+// that stranded markers self-heal instead of wedging the creative permanently.
+func TestDispatchJobsWritesQueuedMarkerWithTtl(t *testing.T) {
+	is := is.New(t)
+
+	storeStub := &StoreStub{
+		mockStore: make(map[string]structure.TranscodeInfo),
+		lastTtls:  make(map[string]int64),
+		kpis:      normalizerMetrics.NormalizerMetrics{},
+	}
+	adserverUrl, _ := url.Parse("http://localhost:9999") // unused in this test
+	assetServerUrl, _ := url.Parse("https://asset-server.example.com")
+	const wantTtl = int64(3600)
+	apiConf := config.AdNormalizerConfig{
+		AdServerUrl:    *adserverUrl,
+		AssetServerUrl: *assetServerUrl,
+		KeyField:       "url",
+		KeyRegex:       "[^a-zA-Z0-9]",
+		InFlightTtl:    int(wantTtl),
+	}
+	api := NewAPI(
+		storeStub,
+		apiConf,
+		&EncoreHandlerStub{},
+		&http.Client{},
+		storeStub.kpiReport,
+	)
+
+	creative := structure.ManifestAsset{
+		CreativeId:        "ttl-creative-id",
+		MasterPlaylistUrl: "http://example.com/ad.mp4",
+	}
+	api.dispatchJobs(map[string]structure.ManifestAsset{creative.CreativeId: creative})
+
+	// Give the goroutines a moment to complete.
+	time.Sleep(100 * time.Millisecond)
+
+	// Marker must be written exactly once.
+	is.Equal(storeStub.sets, 1)
+
+	// And it must carry the in-flight TTL, not be persisted forever.
+	gotTtl, ok := storeStub.lastTtls[creative.CreativeId]
+	is.True(ok)
+	is.Equal(gotTtl, wantTtl)
 }
 
 func setupApi() (*API, *httptest.Server, *StoreStub, *EncoreHandlerStub) {
@@ -179,15 +327,20 @@ func setupApi() (*API, *httptest.Server, *StoreStub, *EncoreHandlerStub) {
 		KeyField:       "url",
 		KeyRegex:       "[^a-zA-Z0-9]",
 		KpiPostUrl:     "http://kpi-post.example.com/metrics",
+		InFlightTtl:    3600,
 	}
-	// Initialize the API with the mock store
+	// Initialize the API with the mock store.
+	// Default checkAssetExists to always-true so existing tests don't make real
+	// HTTP calls to external asset URLs. Individual tests that exercise the
+	// existence-check logic override this field directly.
 	api := NewAPI(
 		storeStub,
 		apiConf,
 		encoreHandler,
-		&http.Client{}, // Use nil for the client in tests, or you can create a mock client
+		&http.Client{},
 		storeStub.kpiReport,
 	)
+	api.checkAssetExists = func(assetUrl string) bool { return true }
 	return api, testServer, storeStub, encoreHandler
 }
 
@@ -196,8 +349,7 @@ func TestReplaceVast(t *testing.T) {
 	api, ts, storeStub, encoreHandler := setupApi()
 	defer ts.Close()
 	// Populate the store with one ad
-	re := regexp.MustCompile("[^a-zA-Z0-9]")
-	adKey := re.ReplaceAllString("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4", "")
+	adKey := util.HashCreativeUrl("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4")
 	transcodeInfo := structure.TranscodeInfo{
 		Url:         "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8",
 		AspectRatio: "16:9",
@@ -252,13 +404,79 @@ func TestReplaceVast(t *testing.T) {
 	storeStub.reset()
 }
 
+func TestReplaceVastWithDashPrefer(t *testing.T) {
+	is := is.New(t)
+	api, ts, storeStub, encoreHandler := setupApi()
+	defer ts.Close()
+	adKey := util.HashCreativeUrl("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4")
+	transcodeInfo := structure.TranscodeInfo{
+		Url:         "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8",
+		AspectRatio: "16:9",
+		FrameRates:  []float64{25.0},
+		Status:      "COMPLETED",
+	}
+	_ = storeStub.Set(adKey, transcodeInfo)
+	vastReq, err := http.NewRequest(
+		"GET",
+		ts.URL,
+		nil,
+	)
+	is.NoErr(err)
+	vastReq.Header.Set("accept", "application/xml")
+	vastReq.Header.Set("prefer", "manifest-format=dash")
+	qps := vastReq.URL.Query()
+	qps.Set("requestType", "vast")
+	vastReq.URL.RawQuery = qps.Encode()
+	recorder := httptest.NewRecorder()
+	api.HandleVast(recorder, vastReq)
+	is.Equal(recorder.Result().StatusCode, http.StatusOK)
+	is.Equal(recorder.Result().Header.Get("Preference-Applied"), "manifest-format=dash")
+	is.Equal(recorder.Result().Header.Get("Vary"), "Prefer")
+	defer recorder.Result().Body.Close()
+
+	responseBody, err := io.ReadAll(recorder.Result().Body)
+	is.NoErr(err)
+	vastRes, err := vmap.DecodeVast(responseBody)
+	is.NoErr(err)
+	is.Equal(len(vastRes.Ad), 1)
+	mediaFile := vastRes.Ad[0].InLine.Creatives[0].Linear.MediaFiles[0]
+	is.Equal(mediaFile.MediaType, "application/dash+xml")
+	is.Equal(mediaFile.Text, "https://testcontent.eyevinn.technology/ads/manifest.mpd")
+
+	encoreHandler.reset()
+	storeStub.reset()
+}
+
+func TestRequestedManifestFormat(t *testing.T) {
+	is := is.New(t)
+	request, err := http.NewRequest("GET", "/", nil)
+	is.NoErr(err)
+	manifestFormat, applied := requestedManifestFormat(request)
+	is.Equal(manifestFormat, structure.ManifestFormatHLS)
+	is.Equal(applied, false)
+
+	request.Header.Set("Prefer", "manifest-format=vnd.apple.mpegurl")
+	manifestFormat, applied = requestedManifestFormat(request)
+	is.Equal(manifestFormat, structure.ManifestFormatHLS)
+	is.Equal(applied, true)
+
+	request.Header.Set("Prefer", "respond-async, manifest-format=application/dash+xml")
+	manifestFormat, applied = requestedManifestFormat(request)
+	is.Equal(manifestFormat, structure.ManifestFormatDASH)
+	is.Equal(applied, true)
+
+	request.Header.Set("Prefer", "manifest-format=unsupported")
+	manifestFormat, applied = requestedManifestFormat(request)
+	is.Equal(manifestFormat, structure.ManifestFormatHLS)
+	is.Equal(applied, false)
+}
+
 func TestReplaceVastWithBlacklisted(t *testing.T) {
 	is := is.New(t)
 	api, ts, storeStub, encoreHandler := setupApi()
 	defer ts.Close()
 	// Populate the store with one ad
-	re := regexp.MustCompile("[^a-zA-Z0-9]")
-	adKey := re.ReplaceAllString("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4", "")
+	adKey := util.HashCreativeUrl("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4")
 	transcodeInfo := structure.TranscodeInfo{
 		Url:         "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8",
 		AspectRatio: "16:9",
@@ -305,11 +523,10 @@ func TestReplaceVastWithBlacklisted(t *testing.T) {
 
 func TestReplaceVastWithFiller(t *testing.T) {
 	is := is.New(t)
-	re := regexp.MustCompile("[^a-zA-Z0-9]")
 
 	api, ts, storeStub, encoreHandler := setupApi()
 	defer ts.Close()
-	adKey := re.ReplaceAllString("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4", "")
+	adKey := util.HashCreativeUrl("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4")
 	transcodeInfo := structure.TranscodeInfo{
 		Url:         "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8",
 		AspectRatio: "16:9",
@@ -324,7 +541,7 @@ func TestReplaceVastWithFiller(t *testing.T) {
 		FrameRates:  []float64{25.0},
 		Status:      "COMPLETED",
 	}
-	fillerKey := re.ReplaceAllString("http://example.com/video.mp4", "")
+	fillerKey := util.HashCreativeUrl("http://example.com/video.mp4")
 	_ = storeStub.Set(fillerKey, fillerInfo)
 
 	vastReq, err := http.NewRequest(
@@ -372,10 +589,9 @@ func TestReplaceVastWithFiller(t *testing.T) {
 func TestGetAssetList(t *testing.T) {
 	is := is.New(t)
 	// Populate the store with one ad
-	re := regexp.MustCompile("[^a-zA-Z0-9]")
 	api, ts, storeStub, encoreHandler := setupApi()
 	defer ts.Close()
-	adKey := re.ReplaceAllString("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4", "")
+	adKey := util.HashCreativeUrl("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4")
 	transcodeInfo := structure.TranscodeInfo{
 		Url:         "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8",
 		AspectRatio: "16:9",
@@ -410,6 +626,49 @@ func TestGetAssetList(t *testing.T) {
 	is.NoErr(err)
 	is.Equal(len(assetList), 1)
 	is.Equal(assetList[0].Uri, transcodeInfo.Url)
+	is.Equal(assetList[0].Duration, 10.25)
+
+	encoreHandler.reset()
+	storeStub.reset()
+}
+
+func TestGetAssetListWithDashPrefer(t *testing.T) {
+	is := is.New(t)
+	api, ts, storeStub, encoreHandler := setupApi()
+	defer ts.Close()
+	adKey := util.HashCreativeUrl("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4")
+	transcodeInfo := structure.TranscodeInfo{
+		Url:         "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8",
+		AspectRatio: "16:9",
+		FrameRates:  []float64{25.0},
+		Status:      "COMPLETED",
+	}
+	_ = storeStub.Set(adKey, transcodeInfo)
+	vastReq, err := http.NewRequest(
+		"GET",
+		ts.URL,
+		nil,
+	)
+	is.NoErr(err)
+	vastReq.Header.Set("Accept", "application/json")
+	vastReq.Header.Set("Prefer", "manifest-format=application/dash+xml")
+	qps := vastReq.URL.Query()
+	qps.Set("requestType", "vast")
+	vastReq.URL.RawQuery = qps.Encode()
+	recorder := httptest.NewRecorder()
+	api.HandleVast(recorder, vastReq)
+	is.Equal(recorder.Result().StatusCode, http.StatusOK)
+	is.Equal(recorder.Result().Header.Get("Content-Type"), "application/json")
+	is.Equal(recorder.Result().Header.Get("Preference-Applied"), "manifest-format=dash")
+	defer recorder.Result().Body.Close()
+
+	responseBody, err := io.ReadAll(recorder.Result().Body)
+	is.NoErr(err)
+	var assetList []structure.AssetDescription
+	err = json.Unmarshal(responseBody, &assetList)
+	is.NoErr(err)
+	is.Equal(len(assetList), 1)
+	is.Equal(assetList[0].Uri, "https://testcontent.eyevinn.technology/ads/manifest.mpd")
 	is.Equal(assetList[0].Duration, 10.25)
 
 	encoreHandler.reset()
@@ -465,8 +724,7 @@ func TestReplaceVmap(t *testing.T) {
 	api, ts, storeStub, encoreHandler := setupApi()
 	defer ts.Close()
 	// Populate the store with one ad
-	re := regexp.MustCompile("[^a-zA-Z0-9]")
-	adKey := re.ReplaceAllString("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4", "")
+	adKey := util.HashCreativeUrl("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4")
 	transcodeInfo := structure.TranscodeInfo{
 		Url:         "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8",
 		AspectRatio: "16:9",
@@ -522,6 +780,48 @@ func TestReplaceVmap(t *testing.T) {
 	is.Equal(storeStub.kpis.BrokenAds, 0)
 	is.Equal(storeStub.kpis.IngestedAds, 1)
 	is.Equal(storeStub.kpis.ServedAds, 1)
+
+	encoreHandler.reset()
+	storeStub.reset()
+}
+
+func TestReplaceVmapWithDashPrefer(t *testing.T) {
+	is := is.New(t)
+	api, ts, storeStub, encoreHandler := setupApi()
+	defer ts.Close()
+	adKey := util.HashCreativeUrl("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4")
+	transcodeInfo := structure.TranscodeInfo{
+		Url:         "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8",
+		AspectRatio: "16:9",
+		FrameRates:  []float64{25.0},
+		Status:      "COMPLETED",
+	}
+	_ = storeStub.Set(adKey, transcodeInfo)
+	vmapReq, err := http.NewRequest(
+		"GET",
+		ts.URL+"/vmap",
+		nil,
+	)
+	is.NoErr(err)
+	vmapReq.Header.Set("accept", "application/xml")
+	vmapReq.Header.Set("prefer", "manifest-format=dash")
+	qps := vmapReq.URL.Query()
+	qps.Set("requestType", "vmap")
+	vmapReq.URL.RawQuery = qps.Encode()
+	recorder := httptest.NewRecorder()
+	api.HandleVmap(recorder, vmapReq)
+	is.Equal(recorder.Result().StatusCode, http.StatusOK)
+	is.Equal(recorder.Result().Header.Get("Preference-Applied"), "manifest-format=dash")
+	defer recorder.Result().Body.Close()
+
+	responseBody, err := io.ReadAll(recorder.Result().Body)
+	is.NoErr(err)
+	vmapRes, err := vmap.DecodeVmap(responseBody)
+	is.NoErr(err)
+	firstCreative := vmapRes.AdBreaks[0].AdSource.VASTData.VAST.Ad[0].InLine.Creatives[0]
+	mediaFile := firstCreative.Linear.MediaFiles[0]
+	is.Equal(mediaFile.MediaType, "application/dash+xml")
+	is.Equal(mediaFile.Text, "https://testcontent.eyevinn.technology/ads/manifest.mpd")
 
 	encoreHandler.reset()
 	storeStub.reset()
@@ -704,8 +1004,7 @@ func TestHandlePreIngestCreatives(t *testing.T) {
 	api, ts, storeStub, _ := setupApi()
 	defer ts.Close()
 
-	re := regexp.MustCompile("[^a-zA-Z0-9]")
-	adKey := re.ReplaceAllString("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4", "")
+	adKey := util.HashCreativeUrl("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4")
 	err := storeStub.Set(adKey, structure.TranscodeInfo{
 		Url:         "https://testcontent.eyevinn.technology/ads/alvedon-10s.m3u8",
 		AspectRatio: "16:9",
@@ -743,6 +1042,127 @@ func TestHandlePreIngestCreatives(t *testing.T) {
 	is.NoErr(err)
 
 	is.Equal(response.NotYetProcessed, 1) // One creative is unknown and should be processed
+}
+
+// Creative ids are now a fixed-length hash of the URL, so a long URL can no
+// longer produce an over-long Encore filename on its own (see
+// util.HashCreativeUrl). The length guard in partitionCreatives is kept as a
+// fallback regardless - e.g. for the default (non-"url") keyField mode, which
+// keys off the raw UniversalAdId - so it's exercised directly here.
+func TestPartitionCreativesTooLongCreativeId(t *testing.T) {
+	is := is.New(t)
+	api, ts, storeStub, _ := setupApi()
+	defer ts.Close()
+
+	longCreativeId := strings.Repeat("a", 250)
+	offendingUrl := "https://testcontent.eyevinn.technology/ads/offending.mp4"
+	okUrl := "https://testcontent.eyevinn.technology/ads/new-ad.mp4"
+
+	creatives := map[string]structure.ManifestAsset{
+		longCreativeId: {
+			CreativeId:        longCreativeId,
+			MasterPlaylistUrl: offendingUrl,
+			Source:            offendingUrl,
+		},
+		"shortid": {
+			CreativeId:        "shortid",
+			MasterPlaylistUrl: okUrl,
+			Source:            okUrl,
+		},
+	}
+
+	found, missing, filteredOut := api.partitionCreatives(creatives, structure.ManifestFormatHLS)
+	is.Equal(len(found), 0)
+	is.Equal(len(missing), 1) // only the short id should be dispatched
+	_, stillMissing := missing[longCreativeId]
+	is.True(!stillMissing)
+	is.Equal(filteredOut, 1)
+
+	blacklisted, err := storeStub.InBlackList(offendingUrl)
+	is.NoErr(err)
+	is.True(blacklisted) // the offending media URL should be blacklisted
+
+	notBlacklisted, err := storeStub.InBlackList(okUrl)
+	is.NoErr(err)
+	is.True(!notBlacklisted)
+}
+
+// TestPartitionCreativesAsset404EvictsCache verifies that when the cached
+// master-playlist URL returns 404, the cache key is deleted and the creative
+// is treated as missing (queued for re-transcoding).
+func TestPartitionCreativesAsset404EvictsCache(t *testing.T) {
+	is := is.New(t)
+
+	api, ts, storeStub, _ := setupApi()
+	defer ts.Close()
+
+	// Inject a stub that simulates a 404 for the cached asset URL.
+	api.checkAssetExists = func(assetUrl string) bool { return false }
+
+	creativeId := util.HashCreativeUrl("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4")
+	cachedUrl := "https://asset-server.example.com/ads/alvedon-10s/index.m3u8"
+
+	_ = storeStub.Set(creativeId, structure.TranscodeInfo{
+		Url:    cachedUrl,
+		Status: "COMPLETED",
+		Source: "https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4",
+	})
+
+	creatives := map[string]structure.ManifestAsset{
+		creativeId: {
+			CreativeId:        creativeId,
+			MasterPlaylistUrl: "https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4",
+			Source:            "https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4",
+		},
+	}
+
+	found, missing, filteredOut := api.partitionCreatives(creatives, structure.ManifestFormatHLS)
+
+	is.Equal(len(found), 0)   // must not be served — asset is gone
+	is.Equal(len(missing), 1) // must be re-queued for re-transcoding
+	is.Equal(filteredOut, 0)
+	is.Equal(storeStub.deletes, 1) // cache key must have been evicted
+
+	_, stillInCache := storeStub.mockStore[creativeId]
+	is.True(!stillInCache) // key must be gone from the store
+}
+
+// TestPartitionCreativesAssetTransientErrorPreservesCache verifies that a
+// transient or non-404 error from the asset server does NOT evict the cache —
+// only a definitive 404 should trigger eviction.
+func TestPartitionCreativesAssetTransientErrorPreservesCache(t *testing.T) {
+	is := is.New(t)
+
+	api, ts, storeStub, _ := setupApi()
+	defer ts.Close()
+
+	// Inject a stub that simulates "alive" (non-404, e.g. 200 or network error
+	// treated as assume-alive).
+	api.checkAssetExists = func(assetUrl string) bool { return true }
+
+	creativeId := util.HashCreativeUrl("https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4")
+	cachedUrl := "https://asset-server.example.com/ads/alvedon-10s/index.m3u8"
+
+	_ = storeStub.Set(creativeId, structure.TranscodeInfo{
+		Url:    cachedUrl,
+		Status: "COMPLETED",
+		Source: "https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4",
+	})
+
+	creatives := map[string]structure.ManifestAsset{
+		creativeId: {
+			CreativeId:        creativeId,
+			MasterPlaylistUrl: "https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4",
+			Source:            "https://testcontent.eyevinn.technology/ads/alvedon-10s.mp4",
+		},
+	}
+
+	found, missing, filteredOut := api.partitionCreatives(creatives, structure.ManifestFormatHLS)
+
+	is.Equal(len(found), 1) // must still be served — asset is alive
+	is.Equal(len(missing), 0)
+	is.Equal(filteredOut, 0)
+	is.Equal(storeStub.deletes, 0) // cache must NOT have been evicted
 }
 
 func TestHandlePreIngestCreativesMethodNotAllowed(t *testing.T) {
